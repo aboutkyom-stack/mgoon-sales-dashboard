@@ -129,6 +129,16 @@ def _vp_load_prompt(model: str) -> str:
     return _vp_prompt_path(model).read_text(encoding="utf-8")
 
 
+def _vp_video_prompt_path() -> Path:
+    """동영상 비전패스 전용 프롬프트 경로. 파일 없으면 이미지 Gemini 프롬프트로 폴백."""
+    p = _AGENTS_DIR / "core_gemini_video.md"
+    return p if p.exists() else _AGENTS_DIR / "core_gemini.md"
+
+
+def _vp_load_video_prompt() -> str:
+    return _vp_video_prompt_path().read_text(encoding="utf-8")
+
+
 def _fmt_dt(ts: str | None) -> str:
     """ISO timestamp → 'MM-DD HH:MM' 짧은 표시."""
     if not ts:
@@ -1171,6 +1181,11 @@ with tab_이미지:
                 "⚠️ Claude는 동영상 미지원 — Gemini로만 실행됩니다. "
                 "Gemini Files API로 업로드 후 분석하며, 영상 길이에 비례해 토큰 비용이 발생합니다."
             )
+            st.caption(
+                "📌 **동영상 전용 프롬프트** — 이미지 비전패스와 분리되어 있습니다. "
+                "사운드·동작·시간 변화 등 영상 고유 정보를 자유 관찰 방식으로 캐치하도록 설계됨. "
+                "(현재는 제품 시연 영상 특화)"
+            )
 
             # 모델 선택 (Gemini만)
             _vid_model = st.selectbox(
@@ -1181,21 +1196,25 @@ with tab_이미지:
                 help="동영상은 Gemini 모델만 가능합니다.",
             )
 
-            # 프롬프트 편집 (Gemini 프롬프트 공유)
-            if st.checkbox("📄 Gemini 프롬프트 편집", value=False, key="vp_video_show_prompt"):
-                _video_prompt_key = "vp_editor_gemini"  # 이미지 VP와 공유
+            # 프롬프트 편집 (동영상 전용 — 이미지 VP와 분리)
+            if st.checkbox("📄 동영상 전용 프롬프트 편집", value=False, key="vp_video_show_prompt"):
+                st.caption(
+                    "💡 동영상 전용 프롬프트(`agents/00_vision_pass/core_gemini_video.md`)를 편집합니다. "
+                    "이미지 VP 프롬프트와 분리되어 독립적으로 저장됩니다."
+                )
+                _video_prompt_key = "vp_editor_gemini_video"  # 동영상 전용 (이미지 VP와 분리)
                 if _video_prompt_key not in st.session_state:
-                    st.session_state[_video_prompt_key] = _vp_load_prompt("gemini-2.5-flash")
+                    st.session_state[_video_prompt_key] = _vp_load_video_prompt()
                 _vp_load_prompt_video = st.text_area(
-                    "Gemini 프롬프트 (이미지 VP와 공유)",
+                    "동영상 전용 프롬프트 (제품시연 특화)",
                     value=st.session_state[_video_prompt_key],
                     height=180,
                     key="vp_video_editor",
                 )
-                if st.button("💾 Gemini 프롬프트 저장", key="vp_video_btn_save_prompt"):
-                    _vp_prompt_path("gemini-2.5-flash").write_text(_vp_load_prompt_video, encoding="utf-8")
+                if st.button("💾 동영상 프롬프트 저장", key="vp_video_btn_save_prompt"):
+                    _vp_video_prompt_path().write_text(_vp_load_prompt_video, encoding="utf-8")
                     st.session_state[_video_prompt_key] = _vp_load_prompt_video
-                    st.success("저장 완료!")
+                    st.success("저장 완료! (core_gemini_video.md)")
 
             st.divider()
 
@@ -1248,8 +1267,8 @@ with tab_이미지:
                                 _vmime = _gmv(_vname)
 
                             _v_prompt = (
-                                st.session_state.get("vp_editor_gemini")
-                                or _vp_load_prompt("gemini-2.5-flash")
+                                st.session_state.get("vp_editor_gemini_video")
+                                or _vp_load_video_prompt()
                             )
 
                             with st.spinner(f"{_vname} — Gemini Files 업로드 + 분석…"):
