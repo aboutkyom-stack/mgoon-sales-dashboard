@@ -1,0 +1,11 @@
+streamlit
+supabase
+anthropic
+google-genai
+python-dotenv
+pandas
+psycopg2-binary
+google-auth
+google-auth-oauthlib
+google-api-python-client
+streamlit-paste-button

@@ -1,0 +1,15 @@
+.env
+credentials/
+db/mgoon.sqlite
+db/*.sqlite-journal
+__pycache__/
+*.pyc
+.venv/
+.streamlit/secrets.toml
+
+# 토큰 파일 (Google OAuth 등)
+token.pickle
+*.pickle
+
+# 평문 계정정보
+계정정보(API키-DB정보 등).txt

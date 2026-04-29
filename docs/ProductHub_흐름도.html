@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>ProductHub — 작업 흐름도</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=Pretendard:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #080809;
+  color: #ececec;
+  font-family: 'Pretendard', sans-serif;
+  min-height: 100vh;
+  padding: 48px 32px;
+}
+
+h1 {
+  font-family: 'Syne', sans-serif;
+  font-size: 28px;
+  font-weight: 800;
+  margin-bottom: 6px;
+}
+h1 span { color: #7c6dfa; }
+
+.subtitle {
+  font-size: 13px;
+  color: #555;
+  margin-bottom: 48px;
+}
+
+/* ── 전체 레이아웃 ── */
+.flow {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+/* ── 섹션 행 ── */
+.row {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+}
+
+/* ── 스테이지 레이블 ── */
+.stage-label {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  transform: rotate(180deg);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  color: #333;
+  padding: 16px 10px;
+  border-right: 1px solid #1a1a1f;
+  min-width: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-transform: uppercase;
+}
+
+/* ── 카드 컨테이너 ── */
+.cards {
+  display: flex;
+  flex: 1;
+  gap: 12px;
+  padding: 16px;
+  align-items: center;
+}
+
+/* ── 카드 ── */
+.card {
+  flex: 1;
+  border-radius: 12px;
+  padding: 18px 20px;
+  position: relative;
+  border: 1px solid transparent;
+  transition: transform .2s;
+}
+.card:hover { transform: translateY(-2px); }
+
+.card .icon { font-size: 22px; margin-bottom: 8px; }
+.card .title {
+  font-family: 'Syne', sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+.card .desc {
+  font-size: 12px;
+  color: #888;
+  line-height: 1.6;
+}
+.card .tag {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 20px;
+  margin-top: 8px;
+}
+
+/* 카드 색상 */
+.card.purple { background: #13112a; border-color: #2d2660; }
+.card.purple .tag { background: #2d2660; color: #a89dff; }
+
+.card.blue { background: #0d1a2d; border-color: #1a3a5c; }
+.card.blue .tag { background: #1a3a5c; color: #60a5fa; }
+
+.card.green { background: #0a1f12; border-color: #1a4028; }
+.card.green .tag { background: #1a4028; color: #4ade80; }
+
+.card.yellow { background: #1f1800; border-color: #3d3000; }
+.card.yellow .tag { background: #3d3000; color: #fbbf24; }
+
+.card.gray { background: #111114; border-color: #1e1e26; }
+.card.gray .tag { background: #1e1e26; color: #888; }
+
+.card.red { background: #1f0d0d; border-color: #3d1a1a; }
+.card.red .tag { background: #3d1a1a; color: #f87171; }
+
+/* ── 화살표 ── */
+.arrow-row {
+  display: flex;
+  align-items: center;
+  padding: 0 16px 0 52px;
+  gap: 12px;
+}
+.arrow-line {
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, #1e1e26, #2d2660, #1e1e26);
+  position: relative;
+}
+.arrow-line::after {
+  content: '▼';
+  position: absolute;
+  right: 50%;
+  top: -8px;
+  transform: translateX(50%);
+  color: #2d2660;
+  font-size: 14px;
+}
+.arrow-label {
+  font-size: 11px;
+  color: #333;
+  white-space: nowrap;
+}
+
+/* ── DB 섹션 ── */
+.db-section {
+  background: #0d0d10;
+  border: 1px solid #1e1e26;
+  border-radius: 16px;
+  padding: 24px;
+  margin: 24px 0;
+  max-width: 1100px;
+  margin-left: auto;
+  margin-right: auto;
+}
+.db-section h3 {
+  font-family: 'Syne', sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  color: #444;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  margin-bottom: 16px;
+}
+.db-tables {
+  display: flex;
+  gap: 12px;
+}
+.db-table {
+  flex: 1;
+  background: #111114;
+  border: 1px solid #1e1e26;
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+.db-table .tname {
+  font-family: 'Syne', sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+  color: #7c6dfa;
+  margin-bottom: 4px;
+}
+.db-table .tdesc {
+  font-size: 11px;
+  color: #555;
+  margin-bottom: 10px;
+}
+.db-table .fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.db-table .field {
+  font-size: 10px;
+  background: #1a1a1f;
+  color: #666;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-family: monospace;
+}
+.db-table .field.key { color: #7c6dfa; border: 1px solid #2d2660; }
+.db-table .field.fk  { color: #60a5fa; border: 1px solid #1a3a5c; }
+
+/* ── 커넥터 ── */
+.connector {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 52px;
+  font-size: 11px;
+  color: #333;
+}
+.connector-line {
+  flex: 1;
+  border-top: 1px dashed #1e1e26;
+}
+
+/* ── 상태 배지 ── */
+.status-row {
+  display: flex;
+  gap: 12px;
+  padding: 16px 52px;
+  align-items: center;
+}
+.status-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #666;
+}
+.status-dot {
+  width: 10px; height: 10px;
+  border-radius: 50%;
+}
+
+/* ── 범례 ── */
+.legend {
+  display: flex;
+  gap: 20px;
+  padding: 24px 0 0;
+  border-top: 1px solid #1a1a1f;
+  margin-top: 32px;
+  flex-wrap: wrap;
+}
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: #555;
+}
+.legend-dot {
+  width: 10px; height: 10px;
+  border-radius: 3px;
+}
+</style>
+</head>
+<body>
+
+<h1>Product<span>Hub</span> v2</h1>
+<p class="subtitle">이커머스 제품 등록 자동화 파이프라인 — 작업 흐름도</p>
+
+<div class="flow">
+
+  <!-- STEP 1: 제품 선택 -->
+  <div class="row">
+    <div class="stage-label" style="color:#7c6dfa">STEP 1</div>
+    <div class="cards">
+      <div class="card gray">
+        <div class="icon">📊</div>
+        <div class="title">주문업무 엑셀</div>
+        <div class="desc">전체 취급 제품 목록<br>가격·재고 정보 보유</div>
+        <span class="tag">1,142개 제품</span>
+      </div>
+      <div style="color:#333; font-size:20px;">→</div>
+      <div class="card purple">
+        <div class="icon">📋</div>
+        <div class="title">제품 카탈로그</div>
+        <div class="desc">전체 제품 목록 조회<br>검색·필터로 탐색<br>등록 시작할 제품 선택</div>
+        <span class="tag">1_catalog.py</span>
+      </div>
+      <div style="color:#333; font-size:20px;">→</div>
+      <div class="card purple">
+        <div class="icon">🆕</div>
+        <div class="title">등록 시작</div>
+        <div class="desc">버튼 클릭 한 번으로<br>products_v2에<br>레코드 자동 생성</div>
+        <span class="tag">status: draft</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-row"><div class="arrow-line"></div></div>
+
+  <!-- STEP 2: 정보 입력 -->
+  <div class="row">
+    <div class="stage-label" style="color:#60a5fa">STEP 2</div>
+    <div class="cards">
+      <div class="card blue">
+        <div class="icon">📁</div>
+        <div class="title">이미지 업로드</div>
+        <div class="desc">제품 이미지 업로드<br>Google Drive 자동 저장<br>drive_files DB 기록</div>
+        <span class="tag">Drive 연동</span>
+      </div>
+      <div class="card blue">
+        <div class="icon">📐</div>
+        <div class="title">제품 스펙 입력</div>
+        <div class="desc">크기·무게·소재·색상<br>구성품·제조국·브랜드<br>KC 인증 정보</div>
+        <span class="tag">직접 입력</span>
+      </div>
+      <div class="card blue">
+        <div class="icon">🏪</div>
+        <div class="title">판매자 정보 입력</div>
+        <div class="desc">재고·검수·특이사항<br>단종·재입고·판매채널<br>장단점 전부 기록</div>
+        <span class="tag">직접 입력</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-row"><div class="arrow-line"></div></div>
+
+  <!-- STEP 3: AI 분석 -->
+  <div class="row">
+    <div class="stage-label" style="color:#4ade80">STEP 3</div>
+    <div class="cards">
+      <div class="card green">
+        <div class="icon">👁️</div>
+        <div class="title">Gemini Vision 분석</div>
+        <div class="desc">이미지 자동 분석<br>핵심 특징 5가지 추출<br>키워드·타겟·소구점 도출</div>
+        <span class="tag">AI 자동</span>
+      </div>
+      <div style="color:#333; font-size:20px;">→</div>
+      <div class="card green">
+        <div class="icon">✍️</div>
+        <div class="title">플랫폼별 문구 생성</div>
+        <div class="desc">쿠팡·스마트스토어<br>11번가·ESM·밴드<br>블로그·유튜브 쇼츠</div>
+        <span class="tag">AI 자동</span>
+      </div>
+      <div style="color:#333; font-size:20px;">→</div>
+      <div class="card green">
+        <div class="icon">✅</div>
+        <div class="title">검토 & 승인</div>
+        <div class="desc">AI 결과물 사람이 확인<br>필요 시 수정 후 승인<br>status → review</div>
+        <span class="tag">수동 검수</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-row"><div class="arrow-line"></div></div>
+
+  <!-- STEP 4: 상세페이지 -->
+  <div class="row">
+    <div class="stage-label" style="color:#fbbf24">STEP 4</div>
+    <div class="cards">
+      <div class="card yellow">
+        <div class="icon">🖼️</div>
+        <div class="title">이미지 선택</div>
+        <div class="desc">참조할 제품 이미지<br>원하는 장수 선택<br>순서 지정 가능</div>
+        <span class="tag">수동 선택</span>
+      </div>
+      <div style="color:#333; font-size:20px;">→</div>
+      <div class="card yellow">
+        <div class="icon">📋</div>
+        <div class="title">기획안 생성</div>
+        <div class="desc">섹션별 전략·메시지<br>Visual Prompt 자동 작성<br>히어로/기능/사이즈/CTA</div>
+        <span class="tag">AI 자동</span>
+      </div>
+      <div style="color:#333; font-size:20px;">→</div>
+      <div class="card yellow">
+        <div class="icon">🎨</div>
+        <div class="title">상세페이지 이미지 생성</div>
+        <div class="desc">9:16 비율 자동 생성<br>한국어 텍스트 렌더링<br>Drive 자동 저장</div>
+        <span class="tag">AI 자동</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow-row"><div class="arrow-line"></div></div>
+
+  <!-- STEP 5: 완료 -->
+  <div class="row">
+    <div class="stage-label" style="color:#4ade80">DONE</div>
+    <div class="cards">
+      <div class="card green" style="flex:0.5">
+        <div class="icon">🎉</div>
+        <div class="title">등록 완료</div>
+        <div class="desc">status → done</div>
+        <span class="tag">완료</span>
+      </div>
+      <div class="card gray" style="flex:1.5">
+        <div class="icon">🚀</div>
+        <div class="title">플랫폼 업로드 (예정)</div>
+        <div class="desc">쿠팡·스마트스토어·11번가·ESM API 자동 업로드<br>DB에 저장된 문구 + Drive 이미지 활용</div>
+        <span class="tag">개발 예정</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- DB 구조 -->
+<div class="db-section" style="margin-top:48px">
+  <h3>🗄️ DB 구조</h3>
+  <div class="db-tables">
+    <div class="db-table">
+      <div class="tname">product_catalog</div>
+      <div class="tdesc">전체 제품 마스터 (1,142개)</div>
+      <div class="fields">
+        <span class="field key">id</span>
+        <span class="field">name</span>
+        <span class="field">stock_realtime</span>
+        <span class="field">stock_afterprocess</span>
+        <span class="field">price_retail</span>
+        <span class="field">price_wholesale</span>
+        <span class="field">price_actual</span>
+        <span class="field">price_avg_wholesale</span>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;color:#333;font-size:20px;padding:0 4px;">→</div>
+    <div class="db-table" style="flex:2">
+      <div class="tname">products_v2</div>
+      <div class="tdesc">온라인 등록 진행 제품 (상세 정보 전부)</div>
+      <div class="fields">
+        <span class="field key">id</span>
+        <span class="field fk">catalog_id</span>
+        <span class="field">name</span>
+        <span class="field">status</span>
+        <span class="field">drive_folder_id</span>
+        <span class="field">spec_*</span>
+        <span class="field">cert_*</span>
+        <span class="field">seller_notes</span>
+        <span class="field">inspection_*</span>
+        <span class="field">stock_qty</span>
+        <span class="field">features</span>
+        <span class="field">keywords</span>
+        <span class="field">dimensions</span>
+        <span class="field">promo_*</span>
+      </div>
+    </div>
+    <div style="display:flex;align-items:center;color:#333;font-size:20px;padding:0 4px;">→</div>
+    <div class="db-table">
+      <div class="tname">drive_files</div>
+      <div class="tdesc">제품별 이미지/영상 파일</div>
+      <div class="fields">
+        <span class="field key">id</span>
+        <span class="field fk">product_id</span>
+        <span class="field">drive_file_id</span>
+        <span class="field">file_name</span>
+        <span class="field">file_type</span>
+        <span class="field">drive_url</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 범례 -->
+<div class="legend" style="max-width:1100px;margin:0 auto">
+  <div class="legend-item"><div class="legend-dot" style="background:#2d2660"></div> STEP 1 — 제품 선택</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#1a3a5c"></div> STEP 2 — 정보 입력 (수동)</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#1a4028"></div> STEP 3 — AI 분석 + 검수</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#3d3000"></div> STEP 4 — 상세페이지 생성</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#7c6dfa"></div> PK (Primary Key)</div>
+  <div class="legend-item"><div class="legend-dot" style="background:#60a5fa"></div> FK (Foreign Key)</div>
+</div>
+
+</body>
+</html>

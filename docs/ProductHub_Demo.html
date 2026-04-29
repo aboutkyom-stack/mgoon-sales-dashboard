@@ -1,0 +1,831 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ProductHub v2 — Demo</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@400;500&family=Pretendard:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:      #080809;
+  --s1:      #0f0f12;
+  --s2:      #111114;
+  --s3:      #1a1a1f;
+  --border:  #1e1e26;
+  --border2: #2a2a35;
+  --accent:  #7c6dfa;
+  --accent2: #fa6d6d;
+  --green:   #4ade80;
+  --yellow:  #fbbf24;
+  --blue:    #60a5fa;
+  --text:    #ececec;
+  --muted:   #666;
+  --muted2:  #444;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; background: var(--bg); color: var(--text); font-family: 'Pretendard', sans-serif; overflow: hidden; }
+
+/* ── 레이아웃 ── */
+.shell { display: flex; height: 100vh; }
+
+/* ── 사이드바 ── */
+.sidebar {
+  width: 220px; flex-shrink: 0;
+  background: var(--s1);
+  border-right: 1px solid var(--border);
+  display: flex; flex-direction: column;
+  padding: 28px 0 20px;
+}
+.logo {
+  font-family: 'Syne', sans-serif;
+  font-size: 18px; font-weight: 800;
+  color: var(--text); padding: 0 22px 24px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 8px;
+}
+.logo span { color: var(--accent); }
+
+.nav-section { padding: 16px 22px 6px; font-size: 10px; font-weight: 600; color: var(--muted2); letter-spacing: 1.5px; text-transform: uppercase; }
+
+.nav-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 22px; font-size: 13px; font-weight: 500;
+  cursor: pointer; color: var(--muted);
+  border-left: 2px solid transparent;
+  transition: all .15s;
+}
+.nav-item:hover { color: var(--text); background: var(--s2); }
+.nav-item.active { color: var(--text); border-left-color: var(--accent); background: var(--s2); }
+
+.sidebar-bottom { margin-top: auto; padding: 16px 22px; font-size: 11px; color: var(--muted2); }
+.demo-badge {
+  display: inline-block; background: #2a1f00; color: var(--yellow);
+  font-size: 10px; font-weight: 700; padding: 2px 8px;
+  border-radius: 4px; margin-bottom: 6px; letter-spacing: 1px;
+}
+
+/* ── 메인 ── */
+.main { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
+
+/* ── 탑바 ── */
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 32px;
+  border-bottom: 1px solid var(--border);
+  background: var(--s1); flex-shrink: 0;
+}
+.topbar-title { font-family: 'Syne', sans-serif; font-size: 15px; font-weight: 700; }
+.topbar-meta { font-size: 12px; color: var(--muted); }
+
+/* ── 패널 ── */
+.panel { display: none; flex: 1; padding: 28px 32px; flex-direction: column; gap: 20px; overflow-y: auto; }
+.panel.active { display: flex; }
+
+/* ── 공통 컴포넌트 ── */
+.btn {
+  background: var(--accent); color: #fff; border: none;
+  border-radius: 8px; padding: 9px 18px;
+  font-size: 13px; font-weight: 600; cursor: pointer;
+  font-family: 'Pretendard', sans-serif;
+  transition: opacity .15s, transform .1s;
+  white-space: nowrap;
+}
+.btn:hover { opacity: .85; transform: translateY(-1px); }
+.btn.ghost { background: var(--s3); color: var(--text); border: 1px solid var(--border); }
+.btn.ghost:hover { border-color: var(--border2); }
+.btn.green-btn { background: #16a34a; }
+.btn.sm { padding: 6px 14px; font-size: 12px; }
+
+.input {
+  background: var(--s2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 9px 14px;
+  font-size: 13px; color: var(--text);
+  font-family: 'Pretendard', sans-serif;
+  outline: none; transition: border .2s;
+  width: 100%;
+}
+.input:focus { border-color: var(--accent); }
+
+.select {
+  background: var(--s2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 9px 14px;
+  font-size: 13px; color: var(--text);
+  font-family: 'Pretendard', sans-serif;
+  outline: none; cursor: pointer;
+}
+
+.card {
+  background: var(--s2); border: 1px solid var(--border);
+  border-radius: 12px; padding: 20px 24px;
+}
+
+.metric-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.metric {
+  background: var(--s2); border: 1px solid var(--border);
+  border-radius: 10px; padding: 16px 20px;
+}
+.metric .label { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+.metric .value { font-family: 'Syne', sans-serif; font-size: 26px; font-weight: 700; }
+
+.divider { border: none; border-top: 1px solid var(--border); margin: 4px 0; }
+
+/* ── 상태 배지 ── */
+.badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 10px; border-radius: 20px;
+  font-size: 11px; font-weight: 600;
+}
+.badge.none    { background: var(--s3); color: var(--muted); }
+.badge.draft   { background: #0d1a2d; color: var(--blue); }
+.badge.review  { background: #2a1f00; color: var(--yellow); }
+.badge.done    { background: #0d2818; color: var(--green); }
+
+/* ── 카탈로그 테이블 ── */
+.search-row { display: flex; gap: 10px; align-items: center; }
+.search-row .input { max-width: 280px; }
+
+.tbl-header {
+  display: grid;
+  grid-template-columns: 2.5fr 1fr 1fr 1fr 1fr 1fr 1fr;
+  gap: 8px; padding: 10px 16px;
+  font-size: 11px; font-weight: 600; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .5px;
+  border-bottom: 1px solid var(--border);
+}
+.tbl-row {
+  display: grid;
+  grid-template-columns: 2.5fr 1fr 1fr 1fr 1fr 1fr 1fr;
+  gap: 8px; padding: 12px 16px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border);
+  transition: background .1s; align-items: center;
+}
+.tbl-row:hover { background: var(--s3); }
+.tbl-row .pname { font-weight: 600; }
+.tbl-row .price { font-family: 'DM Mono', monospace; font-size: 12px; color: var(--muted); }
+
+/* ── 탭 ── */
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); }
+.tab {
+  padding: 10px 20px; font-size: 13px; font-weight: 500;
+  cursor: pointer; color: var(--muted);
+  border-bottom: 2px solid transparent;
+  transition: all .15s;
+}
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--text); border-bottom-color: var(--accent); }
+.tab-content { display: none; padding-top: 20px; }
+.tab-content.active { display: block; }
+
+/* ── 폼 ── */
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.form-grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.form-grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.field-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.field-group { display: flex; flex-direction: column; }
+.checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+.checkbox-row input { accent-color: var(--accent); width: 15px; height: 15px; }
+
+.product-bar {
+  background: var(--s2); border: 1px solid var(--border);
+  border-radius: 10px; padding: 14px 20px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.product-bar .pname { font-size: 16px; font-weight: 700; }
+.product-bar .pmeta { font-size: 12px; color: var(--muted); margin-top: 3px; }
+
+/* ── 토스트 ── */
+.toast {
+  position: fixed; bottom: 24px; right: 24px;
+  background: #0d2818; border: 1px solid #1a4028;
+  color: var(--green); padding: 12px 20px;
+  border-radius: 10px; font-size: 13px; font-weight: 600;
+  transform: translateY(80px); opacity: 0;
+  transition: all .3s; z-index: 999;
+}
+.toast.show { transform: translateY(0); opacity: 1; }
+
+/* ── DB 브라우저 ── */
+.db-table-wrap { overflow-x: auto; }
+.db-tbl { width: 100%; border-collapse: collapse; font-size: 12px; }
+.db-tbl th {
+  text-align: left; padding: 10px 14px;
+  background: var(--s3); color: var(--muted);
+  font-weight: 600; font-size: 11px; text-transform: uppercase;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.db-tbl td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text); white-space: nowrap;
+  max-width: 200px; overflow: hidden; text-overflow: ellipsis;
+}
+.db-tbl tr:hover td { background: var(--s3); }
+.db-tbl td.mono { font-family: 'DM Mono', monospace; color: var(--muted); font-size: 11px; }
+
+/* ── 홈 흐름 ── */
+.flow-steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+.flow-step {
+  background: var(--s2); border: 1px solid var(--border);
+  border-radius: 12px; padding: 20px;
+  position: relative; overflow: hidden;
+}
+.flow-step::before {
+  content: '';
+  position: absolute; top: 0; left: 0; right: 0;
+  height: 2px;
+}
+.flow-step.s1::before { background: var(--accent); }
+.flow-step.s2::before { background: var(--blue); }
+.flow-step.s3::before { background: var(--green); }
+.flow-step.s4::before { background: var(--yellow); }
+.flow-step .step-num { font-size: 11px; font-weight: 700; color: var(--muted); margin-bottom: 10px; letter-spacing: 1px; }
+.flow-step .step-icon { font-size: 24px; margin-bottom: 8px; }
+.flow-step .step-title { font-family: 'Syne', sans-serif; font-size: 14px; font-weight: 700; margin-bottom: 8px; }
+.flow-step .step-desc { font-size: 12px; color: var(--muted); line-height: 1.7; }
+</style>
+</head>
+<body>
+
+<div class="shell">
+  <!-- ── 사이드바 ── -->
+  <div class="sidebar">
+    <div class="logo">Product<span>Hub</span></div>
+
+    <div class="nav-section">메인</div>
+    <div class="nav-item active" onclick="switchPage('home')">🏠 홈</div>
+    <div class="nav-item" onclick="switchPage('catalog')">📋 제품 카탈로그</div>
+
+    <div class="nav-section">제품 관리</div>
+    <div class="nav-item" onclick="switchPage('product')">✏️ 제품 정보 입력</div>
+    <div class="nav-item" onclick="switchPage('pipeline')">🤖 AI 분석 실행</div>
+    <div class="nav-item" onclick="switchPage('detail')">🎨 상세페이지 생성</div>
+
+    <div class="nav-section">시스템</div>
+    <div class="nav-item" onclick="switchPage('database')">🗄️ DB 브라우저</div>
+
+    <div class="sidebar-bottom">
+      <div class="demo-badge">DEMO</div>
+      <div>ProductHub v2.0</div>
+      <div style="margin-top:4px;color:#333">실제 DB 미연결</div>
+    </div>
+  </div>
+
+  <!-- ── 메인 ── -->
+  <div class="main">
+
+    <!-- 탑바 -->
+    <div class="topbar">
+      <div class="topbar-title" id="topbar-title">🏠 홈</div>
+      <div class="topbar-meta">이커머스 제품 등록 자동화 파이프라인</div>
+    </div>
+
+    <!-- ══ 홈 패널 ══ -->
+    <div class="panel active" id="panel-home">
+      <div class="metric-grid">
+        <div class="metric">
+          <div class="label">전체 제품 목록</div>
+          <div class="value">1,142<span style="font-size:16px;color:var(--muted)">개</span></div>
+        </div>
+        <div class="metric">
+          <div class="label">등록 진행 중</div>
+          <div class="value" style="color:var(--blue)">3<span style="font-size:16px;color:var(--muted)">개</span></div>
+        </div>
+        <div class="metric">
+          <div class="label">검토 대기</div>
+          <div class="value" style="color:var(--yellow)">1<span style="font-size:16px;color:var(--muted)">개</span></div>
+        </div>
+        <div class="metric">
+          <div class="label">등록 완료</div>
+          <div class="value" style="color:var(--green)">2<span style="font-size:16px;color:var(--muted)">개</span></div>
+        </div>
+      </div>
+
+      <hr class="divider">
+      <div style="font-family:'Syne',sans-serif;font-size:15px;font-weight:700;">🔄 작업 흐름</div>
+
+      <div class="flow-steps">
+        <div class="flow-step s1">
+          <div class="step-num">STEP 1</div>
+          <div class="step-icon">📋</div>
+          <div class="step-title">제품 카탈로그</div>
+          <div class="step-desc">전체 제품 목록 조회<br>등록 시작할 제품 선택<br>미등록 / 진행중 구분</div>
+        </div>
+        <div class="flow-step s2">
+          <div class="step-num">STEP 2</div>
+          <div class="step-icon">✏️</div>
+          <div class="step-title">제품 정보 입력</div>
+          <div class="step-desc">이미지 업로드<br>스펙·인증 정보 입력<br>판매자 운영 정보 입력</div>
+        </div>
+        <div class="flow-step s3">
+          <div class="step-num">STEP 3</div>
+          <div class="step-icon">🤖</div>
+          <div class="step-title">AI 분석 실행</div>
+          <div class="step-desc">Gemini Vision 분석<br>플랫폼별 문구 자동 생성<br>Supabase 자동 저장</div>
+        </div>
+        <div class="flow-step s4">
+          <div class="step-num">STEP 4</div>
+          <div class="step-icon">🎨</div>
+          <div class="step-title">상세페이지 생성</div>
+          <div class="step-desc">이미지 선택<br>AI 기획안 생성<br>상세페이지 이미지 생성</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ 카탈로그 패널 ══ -->
+    <div class="panel" id="panel-catalog">
+      <div class="search-row">
+        <input class="input" id="search-input" placeholder="🔍 제품명 검색..." oninput="filterCatalog()" style="max-width:280px">
+        <select class="select" id="status-filter" onchange="filterCatalog()">
+          <option>전체</option>
+          <option>미등록</option>
+          <option>진행중</option>
+          <option>검토대기</option>
+          <option>완료</option>
+        </select>
+        <span style="font-size:13px;color:var(--muted)" id="count-label">총 1,142개</span>
+      </div>
+
+      <div class="card" style="padding:0;overflow:hidden">
+        <div class="tbl-header">
+          <div>제품명</div>
+          <div>실시간재고</div>
+          <div>후처리재고</div>
+          <div>소매가</div>
+          <div>도매가</div>
+          <div>상태</div>
+          <div>액션</div>
+        </div>
+        <div id="catalog-body"></div>
+      </div>
+    </div>
+
+    <!-- ══ 제품 정보 입력 패널 ══ -->
+    <div class="panel" id="panel-product">
+      <!-- 제품 선택 바 -->
+      <div style="display:flex;gap:10px;align-items:flex-end">
+        <div class="field-group" style="width:160px">
+          <div class="field-label">Product ID</div>
+          <input class="input" type="number" id="pid-input" value="1" min="1">
+        </div>
+        <button class="btn" onclick="loadProduct()">불러오기</button>
+        <div id="pid-name" style="font-size:14px;font-weight:600;color:var(--green);padding-bottom:4px"></div>
+      </div>
+
+      <div class="product-bar" id="product-bar" style="display:none">
+        <div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px">현재 편집 중인 제품</div>
+          <div class="pname" id="bar-name"></div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:12px;color:var(--muted)" id="bar-id"></div>
+          <div style="margin-top:4px" id="bar-status"></div>
+        </div>
+      </div>
+
+      <div id="product-form" style="display:none">
+        <div class="tabs">
+          <div class="tab active" onclick="switchTab(this,'tab-image')">📁 이미지 업로드</div>
+          <div class="tab" onclick="switchTab(this,'tab-spec')">📐 제품 스펙 입력</div>
+          <div class="tab" onclick="switchTab(this,'tab-seller')">📝 판매자 정보 입력</div>
+          <div class="tab" onclick="switchTab(this,'tab-ai')">🔍 AI 분석 결과</div>
+        </div>
+
+        <!-- 이미지 탭 -->
+        <div class="tab-content active" id="tab-image">
+          <div class="card" style="margin-bottom:14px">
+            <div style="font-size:14px;font-weight:600;margin-bottom:6px">Drive 이미지 업로드</div>
+            <div style="font-size:12px;color:var(--muted);margin-bottom:14px">제품 이미지를 업로드하면 Google Drive에 자동 저장됩니다.</div>
+            <div style="background:var(--s3);border:2px dashed var(--border2);border-radius:10px;padding:32px;text-align:center;color:var(--muted);font-size:13px;cursor:pointer" onclick="showToast('📁 실제 앱에서 이미지를 업로드하세요!')">
+              🖼️ 이미지 파일을 드래그하거나 클릭해서 선택
+              <div style="font-size:11px;margin-top:6px;color:var(--muted2)">JPG, PNG, WEBP 지원</div>
+            </div>
+          </div>
+          <div style="font-size:14px;font-weight:600;margin-bottom:12px">등록된 이미지</div>
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
+            <div style="background:var(--s3);border:1px solid var(--border);border-radius:8px;padding:24px;text-align:center;color:var(--muted);font-size:12px">🖼️<br>product_01.jpg</div>
+            <div style="background:var(--s3);border:1px solid var(--border);border-radius:8px;padding:24px;text-align:center;color:var(--muted);font-size:12px">🖼️<br>product_02.jpg</div>
+            <div style="background:var(--s3);border:1px solid var(--border);border-radius:8px;padding:24px;text-align:center;color:var(--muted);font-size:12px">🖼️<br>product_03.jpg</div>
+            <div style="background:var(--s3);border:1px solid var(--border);border-radius:8px;padding:24px;text-align:center;color:var(--muted);font-size:12px">🖼️<br>product_04.jpg</div>
+          </div>
+        </div>
+
+        <!-- 스펙 탭 -->
+        <div class="tab-content" id="tab-spec">
+          <div style="font-size:14px;font-weight:600;margin-bottom:14px">📏 크기 / 무게</div>
+          <div class="form-grid-4" style="margin-bottom:20px">
+            <div class="field-group"><div class="field-label">가로 (cm)</div><input class="input" type="number" placeholder="0.0" step="0.1"></div>
+            <div class="field-group"><div class="field-label">세로 (cm)</div><input class="input" type="number" placeholder="0.0" step="0.1"></div>
+            <div class="field-group"><div class="field-label">높이 (cm)</div><input class="input" type="number" placeholder="0.0" step="0.1"></div>
+            <div class="field-group"><div class="field-label">무게 (g)</div><input class="input" type="number" placeholder="0"></div>
+          </div>
+          <div style="font-size:14px;font-weight:600;margin-bottom:14px">🎨 소재 / 색상 / 구성품</div>
+          <div class="form-grid" style="margin-bottom:20px">
+            <div class="field-group"><div class="field-label">소재</div><input class="input" placeholder="예: ABS 플라스틱"></div>
+            <div class="field-group"><div class="field-label">색상</div><input class="input" placeholder="예: 레드, 블루"></div>
+            <div class="field-group" style="grid-column:span 2"><div class="field-label">구성품</div><input class="input" placeholder="예: 본체 1개, 충전케이블 1개, 설명서 1부"></div>
+          </div>
+          <div style="font-size:14px;font-weight:600;margin-bottom:14px">🏭 제조 정보</div>
+          <div class="form-grid-3" style="margin-bottom:20px">
+            <div class="field-group"><div class="field-label">제조국</div><input class="input" placeholder="예: 중국"></div>
+            <div class="field-group"><div class="field-label">제조사/브랜드</div><input class="input" placeholder="예: SY"></div>
+            <div class="field-group"><div class="field-label">모델명</div><input class="input" placeholder="예: SY-994"></div>
+          </div>
+          <div style="font-size:14px;font-weight:600;margin-bottom:14px">✅ 인증 정보</div>
+          <div style="display:flex;gap:16px;align-items:center;margin-bottom:20px">
+            <label class="checkbox-row"><input type="checkbox"> KC 인증</label>
+            <input class="input" placeholder="KC 인증 번호" style="max-width:200px">
+            <input class="input" placeholder="기타 인증 정보">
+          </div>
+          <button class="btn" onclick="showToast('💾 스펙 저장 완료!')">💾 스펙 저장</button>
+        </div>
+
+        <!-- 판매자 탭 -->
+        <div class="tab-content" id="tab-seller">
+          <div class="field-group" style="margin-bottom:16px">
+            <div class="field-label">판매자 특이사항 (장점/단점 전부)</div>
+            <textarea class="input" rows="4" placeholder="예: 박스 상태 양호, 건전지 미포함, 조립 필요, 색상 실물과 다를 수 있음 등 사소한 것도 전부 입력" style="resize:vertical"></textarea>
+          </div>
+          <div class="form-grid" style="margin-bottom:16px">
+            <div style="display:flex;flex-direction:column;gap:12px">
+              <label class="checkbox-row"><input type="checkbox"> 검수 가능 여부</label>
+              <input class="input" placeholder="검수 방법 (예: 건전지 넣어서 작동 확인)">
+              <label class="checkbox-row"><input type="checkbox"> 박스 재사용 여부</label>
+              <label class="checkbox-row"><input type="checkbox" checked> 온라인 판매 허용</label>
+            </div>
+            <div style="display:flex;flex-direction:column;gap:12px">
+              <div class="field-group"><div class="field-label">현재 재고 수량</div><input class="input" type="number" value="0"></div>
+              <label class="checkbox-row"><input type="checkbox"> 재입고 예정</label>
+              <label class="checkbox-row"><input type="checkbox"> 단종 여부</label>
+              <input class="input" placeholder="판매 채널 제한 (예: 전체 허용)">
+            </div>
+          </div>
+          <div class="field-group" style="margin-bottom:16px">
+            <div class="field-label">기타 주의사항</div>
+            <input class="input" placeholder="예: 파손 주의, 직사광선 피할 것">
+          </div>
+          <hr class="divider" style="margin-bottom:16px">
+          <div style="display:flex;gap:10px;align-items:center">
+            <select class="select"><option>draft</option><option>review</option><option>done</option></select>
+            <button class="btn" onclick="showToast('💾 저장 완료!')">💾 저장</button>
+          </div>
+        </div>
+
+        <!-- AI 분석 탭 -->
+        <div class="tab-content" id="tab-ai">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+            <div>
+              <div style="font-size:13px;font-weight:600;margin-bottom:10px">핵심 특징</div>
+              <div style="font-size:12px;color:var(--muted);line-height:2">
+                - 6채널 무선 조종<br>- 360° 무한 회전 크레인<br>- 트롤리 전·후진 기능<br>- 30초 자동 OFF<br>- 충전식 배터리 내장
+              </div>
+              <div style="font-size:13px;font-weight:600;margin:16px 0 8px">타겟 고객</div>
+              <div style="font-size:12px;color:var(--muted)">건설 장난감에 관심 있는 8-14세 남아 및 키덜트</div>
+              <div style="font-size:13px;font-weight:600;margin:16px 0 8px">핵심 소구점</div>
+              <div style="font-size:12px;color:var(--muted)">실제 건설 현장 느낌의 초대형 무선 타워크레인</div>
+            </div>
+            <div>
+              <div style="font-size:13px;font-weight:600;margin-bottom:10px">검색 키워드</div>
+              <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px">
+                <span style="background:var(--s3);color:var(--muted);padding:3px 8px;border-radius:4px;font-size:11px">타워크레인</span>
+                <span style="background:var(--s3);color:var(--muted);padding:3px 8px;border-radius:4px;font-size:11px">무선조종</span>
+                <span style="background:var(--s3);color:var(--muted);padding:3px 8px;border-radius:4px;font-size:11px">RC크레인</span>
+                <span style="background:var(--s3);color:var(--muted);padding:3px 8px;border-radius:4px;font-size:11px">건설장난감</span>
+                <span style="background:var(--s3);color:var(--muted);padding:3px 8px;border-radius:4px;font-size:11px">키덜트</span>
+              </div>
+              <div style="font-size:13px;font-weight:600;margin-bottom:10px">치수 정보</div>
+              <div style="font-size:12px;color:var(--muted);line-height:2">
+                - 높이: 130cm<br>- 팔 길이: 약 80cm<br>- 무게: 약 2.5kg
+              </div>
+            </div>
+          </div>
+          <div style="margin-top:16px">
+            <button class="btn" onclick="switchPage('pipeline')">🤖 AI 분석 실행 페이지로 이동</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="product-empty" style="text-align:center;padding:60px;color:var(--muted)">
+        Product ID를 입력하고 불러오기를 눌러주세요.
+      </div>
+    </div>
+
+    <!-- ══ AI 분석 패널 ══ -->
+    <div class="panel" id="panel-pipeline">
+      <div class="card">
+        <div style="font-size:15px;font-weight:700;margin-bottom:6px">🤖 AI 분석 실행</div>
+        <div style="font-size:12px;color:var(--muted)">Gemini Vision으로 이미지를 분석하고 플랫폼별 문구를 자동 생성합니다.</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+        <div class="card">
+          <div style="font-size:14px;font-weight:600;margin-bottom:12px">1단계 — Gemini Vision 분석</div>
+          <div style="font-size:12px;color:var(--muted);margin-bottom:14px">등록된 이미지 4개 · 최대 10장 분석</div>
+          <button class="btn" onclick="showToast('🔍 분석 중... (실제 앱에서 실행하세요)')">🔍 1단계 분석 시작</button>
+        </div>
+        <div class="card">
+          <div style="font-size:14px;font-weight:600;margin-bottom:12px">2단계 — 플랫폼별 문구 생성</div>
+          <div style="font-size:12px;color:var(--muted);margin-bottom:14px">1단계 완료 후 활성화됩니다.</div>
+          <button class="btn" onclick="showToast('✍️ 문구 생성 중... (실제 앱에서 실행하세요)')">✍️ 2단계 문구 생성</button>
+        </div>
+      </div>
+      <div class="card" style="background:#0a1f12;border-color:#1a4028">
+        <div style="font-size:12px;color:var(--green);font-family:'DM Mono',monospace;line-height:2">
+          ✅ 이미지 로드: product_01.jpg<br>
+          ✅ 이미지 로드: product_02.jpg<br>
+          ✅ 이미지 로드: product_03.jpg<br>
+          ✅ 이미지 로드: product_04.jpg<br>
+          🔍 Gemini Vision 분석 중...<br>
+          ✅ 1단계 분석 완료 및 저장!<br>
+          ⏳ API 호출 간격 대기 (10초)...<br>
+          ✅ 2단계 문구 생성 완료! status → review
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ 상세페이지 패널 ══ -->
+    <div class="panel" id="panel-detail">
+      <div class="card">
+        <div style="font-size:15px;font-weight:700;margin-bottom:6px">🎨 상세페이지 생성</div>
+        <div style="font-size:12px;color:var(--muted)">이미지를 선택하고 AI 기획안을 생성한 뒤 상세페이지 이미지를 만듭니다.</div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
+        <div style="background:var(--s3);border:2px solid var(--accent);border-radius:8px;padding:20px;text-align:center;font-size:12px;color:var(--muted);cursor:pointer">🖼️<br>product_01.jpg<br><span style="color:var(--accent);font-size:11px">✓ 선택됨</span></div>
+        <div style="background:var(--s3);border:2px solid var(--accent);border-radius:8px;padding:20px;text-align:center;font-size:12px;color:var(--muted);cursor:pointer">🖼️<br>product_02.jpg<br><span style="color:var(--accent);font-size:11px">✓ 선택됨</span></div>
+        <div style="background:var(--s3);border:1px solid var(--border);border-radius:8px;padding:20px;text-align:center;font-size:12px;color:var(--muted);cursor:pointer">🖼️<br>product_03.jpg</div>
+        <div style="background:var(--s3);border:1px solid var(--border);border-radius:8px;padding:20px;text-align:center;font-size:12px;color:var(--muted);cursor:pointer">🖼️<br>product_04.jpg</div>
+      </div>
+      <div style="display:flex;gap:10px;align-items:center">
+        <input class="input" type="number" value="7" min="3" max="15" style="width:80px">
+        <span style="font-size:13px;color:var(--muted)">페이지 수</span>
+        <button class="btn ghost" onclick="showToast('📋 기획안 생성 중...')">📋 기획안 생성</button>
+        <button class="btn" onclick="showToast('🚀 이미지 생성 시작! (실제 앱에서 실행하세요)')">🚀 이미지 생성 시작</button>
+      </div>
+      <div class="card">
+        <div style="font-size:13px;font-weight:600;margin-bottom:12px">기획안 미리보기</div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <div style="background:var(--s3);border-radius:8px;padding:12px 16px;font-size:12px">
+            <span style="color:var(--accent);font-weight:700">[1] 히어로</span> — <span style="color:var(--muted)">압도적인 스케일로 첫인상을 확정짓는 섹션</span>
+            <span style="background:var(--s2);color:var(--green);font-size:11px;padding:2px 8px;border-radius:4px;margin-left:8px">✅ 생성완료</span>
+          </div>
+          <div style="background:var(--s3);border-radius:8px;padding:12px 16px;font-size:12px">
+            <span style="color:var(--accent);font-weight:700">[2] 기능 소개</span> — <span style="color:var(--muted)">6채널 조종 핵심 기능 상세 설명</span>
+            <span style="background:var(--s2);color:var(--green);font-size:11px;padding:2px 8px;border-radius:4px;margin-left:8px">✅ 생성완료</span>
+          </div>
+          <div style="background:var(--s3);border-radius:8px;padding:12px 16px;font-size:12px">
+            <span style="color:var(--accent);font-weight:700">[3] 크기 비교</span> — <span style="color:var(--muted)">130cm 실제 사이즈 인포그래픽</span>
+            <span style="background:#2a1f00;color:var(--yellow);font-size:11px;padding:2px 8px;border-radius:4px;margin-left:8px">⏳ 생성중</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ══ DB 브라우저 패널 ══ -->
+    <div class="panel" id="panel-database">
+      <div class="tabs">
+        <div class="tab active" onclick="switchTab(this,'dbtab-view')">📊 테이블 조회</div>
+        <div class="tab" onclick="switchTab(this,'dbtab-edit')">✏️ 행 수정</div>
+      </div>
+
+      <div class="tab-content active" id="dbtab-view">
+        <div style="display:flex;gap:10px;margin-bottom:16px;align-items:center">
+          <select class="select" onchange="switchDbTable(this.value)">
+            <option value="products_v2">products_v2 (등록 진행 제품)</option>
+            <option value="product_catalog">product_catalog (전체 카탈로그)</option>
+            <option value="drive_files">drive_files (Drive 파일 목록)</option>
+          </select>
+          <select class="select"><option>20</option><option>50</option><option>100</option></select>
+          <span style="font-size:13px;color:var(--muted)" id="db-count">전체 3행 중 3행 표시</span>
+        </div>
+        <div class="card" style="padding:0">
+          <div class="db-table-wrap">
+            <table class="db-tbl" id="db-table"></table>
+          </div>
+        </div>
+      </div>
+
+      <div class="tab-content" id="dbtab-edit">
+        <div style="display:flex;gap:10px;margin-bottom:20px;align-items:flex-end">
+          <select class="select"><option>products_v2</option><option>product_catalog</option><option>drive_files</option></select>
+          <div class="field-group"><div class="field-label">수정할 ID</div><input class="input" type="number" value="1" style="width:100px"></div>
+          <button class="btn" onclick="showToast('✅ 불러오기 완료!')">불러오기</button>
+        </div>
+        <div class="card">
+          <div style="font-size:13px;font-weight:600;margin-bottom:16px">products_v2 · ID 1 수정</div>
+          <div style="display:flex;flex-direction:column;gap:12px">
+            <div class="field-group"><div class="field-label">🔒 id</div><input class="input" value="1" disabled style="opacity:.4"></div>
+            <div class="field-group"><div class="field-label">name</div><input class="input" value="스페이스건"></div>
+            <div class="field-group"><div class="field-label">status</div><input class="input" value="draft"></div>
+            <div class="field-group"><div class="field-label">seller_notes</div><input class="input" value="박스 상태 양호, 건전지 미포함"></div>
+            <div class="field-group"><div class="field-label">stock_qty</div><input class="input" type="number" value="15"></div>
+          </div>
+          <div style="margin-top:16px;display:flex;gap:10px">
+            <button class="btn" onclick="showToast('✅ 저장 완료!')">💾 저장</button>
+            <button class="btn ghost">취소</button>
+          </div>
+        </div>
+      </div>
+
+      <hr class="divider">
+      <div style="font-size:13px;font-weight:600;margin-bottom:12px">📊 빠른 현황</div>
+      <div class="metric-grid">
+        <div class="metric"><div class="label">product_catalog</div><div class="value">1,142<span style="font-size:14px;color:var(--muted)">개</span></div></div>
+        <div class="metric"><div class="label">products_v2 전체</div><div class="value">3<span style="font-size:14px;color:var(--muted)">개</span></div></div>
+        <div class="metric"><div class="label">draft</div><div class="value" style="color:var(--blue)">2<span style="font-size:14px;color:var(--muted)">개</span></div></div>
+        <div class="metric"><div class="label">review</div><div class="value" style="color:var(--yellow)">1<span style="font-size:14px;color:var(--muted)">개</span></div></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- 토스트 -->
+<div class="toast" id="toast"></div>
+
+<script>
+// ── 더미 데이터 ──────────────────────────────────────────────
+const CATALOG = [
+  { name: "스페이스건", stock: 25, after: 0, retail: 15000, wholesale: 7500, status: "draft" },
+  { name: "초대형 무선 타워크레인", stock: 12, after: 3, retail: 89000, wholesale: 45000, status: "review" },
+  { name: "SY 994 히어로즈 4종", stock: 110, after: 0, retail: 7000, wholesale: 3500, status: "none" },
+  { name: "SY 990 지옥문", stock: 0, after: 0, retail: 50000, wholesale: 25000, status: "none" },
+  { name: "SY 970 바닷속 산", stock: 0, after: 0, retail: 120000, wholesale: 60000, status: "done" },
+  { name: "SY 968 마인 용암 2종", stock: 0, after: 0, retail: 10000, wholesale: 5000, status: "none" },
+  { name: "SY 961 원피스 배", stock: 36, after: 0, retail: 10000, wholesale: 5000, status: "none" },
+  { name: "SY 934 겨울집", stock: 0, after: 0, retail: 35000, wholesale: 17500, status: "none" },
+  { name: "SY 933 가을집", stock: 25, after: 0, retail: 34000, wholesale: 17000, status: "none" },
+  { name: "SY 860 닌자고 인베이더", stock: 5, after: 0, retail: 36000, wholesale: 18000, status: "none" },
+  { name: "SY 869 헐크버스터 4종", stock: 3, after: 0, retail: 10000, wholesale: 5000, status: "none" },
+  { name: "SY 830 프렌즈 대저택", stock: 0, after: 0, retail: 120000, wholesale: 60000, status: "none" },
+];
+
+const DB_DATA = {
+  products_v2: {
+    headers: ["id","name","status","stock_qty","seller_notes","spec_width_cm","cert_kc_yn","updated_at"],
+    rows: [
+      [1,"스페이스건","draft",25,"박스 상태 양호","12.5","false","2026-04-22 12:03"],
+      [2,"초대형 무선 타워크레인","review",12,"검수 가능, 건전지 미포함","45.0","true","2026-04-22 14:21"],
+      [3,"SY 970 바닷속 산","done",0,"단종 예정","30.0","false","2026-04-22 09:15"],
+    ]
+  },
+  product_catalog: {
+    headers: ["id","name","stock_realtime","stock_afterprocess","price_retail","price_wholesale","price_actual"],
+    rows: [
+      [1,"스페이스건",25,0,15000,7500,7000],
+      [2,"초대형 무선 타워크레인",12,3,89000,45000,42000],
+      [3,"SY 994 히어로즈 4종",110,0,7000,3500,3500],
+      [4,"SY 990 지옥문",0,0,50000,25000,23000],
+      [5,"SY 970 바닷속 산",0,0,120000,60000,55000],
+    ]
+  },
+  drive_files: {
+    headers: ["id","product_id","file_name","file_type","created_at"],
+    rows: [
+      [1,1,"product_01.jpg","image","2026-04-22 11:30"],
+      [2,1,"product_02.jpg","image","2026-04-22 11:30"],
+      [3,2,"crane_main.jpg","image","2026-04-22 13:10"],
+      [4,2,"crane_detail.jpg","image","2026-04-22 13:11"],
+    ]
+  }
+};
+
+const PRODUCTS = {
+  1: { name: "스페이스건", status: "draft" },
+  2: { name: "초대형 무선 타워크레인", status: "review" },
+  3: { name: "SY 970 바닷속 산", status: "done" },
+};
+
+// ── 네비게이션 ────────────────────────────────────────────────
+function switchPage(page) {
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+
+  document.getElementById('panel-' + page).classList.add('active');
+
+  const titles = {
+    home: '🏠 홈', catalog: '📋 제품 카탈로그',
+    product: '✏️ 제품 정보 입력', pipeline: '🤖 AI 분석 실행',
+    detail: '🎨 상세페이지 생성', database: '🗄️ DB 브라우저'
+  };
+  document.getElementById('topbar-title').textContent = titles[page] || page;
+
+  const navMap = { home: 0, catalog: 1, product: 2, pipeline: 3, detail: 4, database: 5 };
+  const navItems = document.querySelectorAll('.nav-item');
+  if (navMap[page] !== undefined) navItems[navMap[page]].classList.add('active');
+}
+
+// ── 카탈로그 ─────────────────────────────────────────────────
+function statusBadge(s) {
+  const map = {
+    none:   ['미등록', 'none'],
+    draft:  ['진행중', 'draft'],
+    review: ['검토대기', 'review'],
+    done:   ['완료', 'done'],
+  };
+  const [label, cls] = map[s] || ['미등록','none'];
+  return `<span class="badge ${cls}">
+    ${{ none:'⬜', draft:'🔵', review:'🟡', done:'🟢' }[s] || '⬜'} ${label}
+  </span>`;
+}
+
+function actionBtn(item, idx) {
+  if (item.status === 'none') {
+    return `<button class="btn sm" onclick="startRegister(${idx})">등록 시작</button>`;
+  }
+  return `<button class="btn sm ghost" onclick="goProduct(${idx})">상세보기</button>`;
+}
+
+function renderCatalog(items) {
+  const body = document.getElementById('catalog-body');
+  body.innerHTML = items.map((item, idx) => `
+    <div class="tbl-row">
+      <div class="pname">${item.name}</div>
+      <div class="price">${item.stock.toLocaleString()}</div>
+      <div class="price">${item.after.toLocaleString()}</div>
+      <div class="price">₩${item.retail.toLocaleString()}</div>
+      <div class="price">₩${item.wholesale.toLocaleString()}</div>
+      <div>${statusBadge(item.status)}</div>
+      <div>${actionBtn(item, idx)}</div>
+    </div>
+  `).join('');
+}
+
+function filterCatalog() {
+  const q = document.getElementById('search-input').value.toLowerCase();
+  const f = document.getElementById('status-filter').value;
+  const statusMap = { '전체': null, '미등록': 'none', '진행중': 'draft', '검토대기': 'review', '완료': 'done' };
+  const filtered = CATALOG.filter(item => {
+    const matchName = item.name.toLowerCase().includes(q);
+    const matchStatus = !statusMap[f] || item.status === statusMap[f];
+    return matchName && matchStatus;
+  });
+  document.getElementById('count-label').textContent = `총 ${filtered.length}개`;
+  renderCatalog(filtered);
+}
+
+function startRegister(idx) {
+  CATALOG[idx].status = 'draft';
+  showToast(`✅ 등록 시작! — ${CATALOG[idx].name}`);
+  filterCatalog();
+  setTimeout(() => switchPage('product'), 800);
+}
+
+function goProduct(idx) {
+  switchPage('product');
+}
+
+// ── 제품 정보 입력 ────────────────────────────────────────────
+function loadProduct() {
+  const pid = parseInt(document.getElementById('pid-input').value);
+  const p = PRODUCTS[pid];
+  if (!p) { showToast('❌ 해당 ID의 제품이 없습니다.'); return; }
+
+  document.getElementById('product-bar').style.display = 'flex';
+  document.getElementById('product-form').style.display = 'block';
+  document.getElementById('product-empty').style.display = 'none';
+  document.getElementById('bar-name').textContent = p.name;
+  document.getElementById('bar-id').textContent = `ID: ${pid}`;
+  const statusMap = { draft:'🔵 진행중', review:'🟡 검토대기', done:'🟢 완료' };
+  document.getElementById('bar-status').innerHTML = `<span class="badge ${p.status}">${statusMap[p.status]}</span>`;
+  document.getElementById('pid-name').textContent = `✅  ${p.name}`;
+}
+
+// ── 탭 전환 ──────────────────────────────────────────────────
+function switchTab(el, targetId) {
+  const parent = el.closest('.panel') || el.closest('.main') || document;
+  el.parentElement.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+
+  const allContents = document.querySelectorAll(`#${targetId}`)[0]?.parentElement?.querySelectorAll('.tab-content');
+  if (allContents) allContents.forEach(c => c.classList.remove('active'));
+  document.getElementById(targetId)?.classList.add('active');
+}
+
+// ── DB 테이블 ─────────────────────────────────────────────────
+function renderDbTable(name) {
+  const data = DB_DATA[name];
+  if (!data) return;
+  const tbl = document.getElementById('db-table');
+  const count = data.rows.length;
+  document.getElementById('db-count').textContent = `전체 ${count}행 중 ${count}행 표시`;
+  tbl.innerHTML = `
+    <thead><tr>${data.headers.map(h=>`<th>${h}</th>`).join('')}</tr></thead>
+    <tbody>${data.rows.map(row=>`<tr>${row.map(cell=>`<td class="${typeof cell==='number'?'mono':''}">${cell}</td>`).join('')}</tr>`).join('')}</tbody>
+  `;
+}
+function switchDbTable(name) { renderDbTable(name); }
+
+// ── 토스트 ────────────────────────────────────────────────────
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+// ── 초기화 ───────────────────────────────────────────────────
+renderCatalog(CATALOG);
+renderDbTable('products_v2');
+</script>
+</body>
+</html>
