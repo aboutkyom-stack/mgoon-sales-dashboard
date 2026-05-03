@@ -25,7 +25,7 @@ class SpecField(TypedDict, total=False):
     unit: str
 
 
-# 시각설명에서 추출 가능한 스펙 필드만 정의 (KC인증·가격 등은 제외)
+# 시각설명에서 추출 가능한 스펙 필드만 정의 (가격·재고는 제외, 인증번호는 시각설명에 명시되면 추출)
 SPEC_FIELDS: list[SpecField] = [
     {"name": "카테고리",     "label": "카테고리",     "type": "text",
      "desc": "제품의 대분류 (예: 완구, 주방용품, 생활가전)"},
@@ -51,6 +51,10 @@ SPEC_FIELDS: list[SpecField] = [
      "desc": "주조색. 보조색은 ',' 로 나열"},
     {"name": "구성품",       "label": "구성품",       "type": "text",
      "desc": "박스에 포함된 부속품 목록"},
+    {"name": "kc인증번호",   "label": "KC 인증번호",   "type": "text",
+     "desc": "이미지/문구에 명시된 KC 인증 번호 그대로 (예: 'KC R-R-XXX-...'). 없으면 null"},
+    {"name": "전파인증번호", "label": "전파인증번호", "type": "text",
+     "desc": "이미지/문구에 명시된 전파인증 번호 그대로. 없으면 null"},
 ]
 
 

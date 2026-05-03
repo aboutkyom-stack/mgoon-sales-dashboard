@@ -54,6 +54,7 @@ from pipeline.models_config import (
     family_of as _vp_family_of,
 )
 from pipeline.spec_schema import SPEC_FIELDS
+from pipeline.storage import get_storage
 
 # ── 모드 결정 / 임시 레코드 자동 생성 ────────────────────────
 _mode_raw  = st.session_state.get("edit_mode", "new")
@@ -184,12 +185,12 @@ def _cancel() -> None:
 # 수정 모드: 스펙부터 → 이미지 → 판매자 (스펙 편집이 가장 잦은 작업)
 # 첫 번째 탭이 자동 활성화되는 Streamlit 특성 활용.
 if _is_temp:
-    tab_이미지, tab_스펙, tab_판매자 = st.tabs(
-        ["📁 이미지 & Vision Pass", "📐 스펙", "📝 판매자 정보"]
+    tab_이미지, tab_스펙, tab_엠군, tab_판매자 = st.tabs(
+        ["📁 이미지 & Vision Pass", "📐 스펙", "🧪 엠군 파이프라인", "📝 판매자 정보"]
     )
 else:
-    tab_스펙, tab_이미지, tab_판매자 = st.tabs(
-        ["📐 스펙", "📁 이미지 & Vision Pass", "📝 판매자 정보"]
+    tab_스펙, tab_이미지, tab_엠군, tab_판매자 = st.tabs(
+        ["📐 스펙", "📁 이미지 & Vision Pass", "🧪 엠군 파이프라인", "📝 판매자 정보"]
     )
 
 # ─────────────────────────────────────────────────────────
@@ -1427,6 +1428,16 @@ with tab_스펙:
                                 _cur_v = row.get(_k)
                                 if _mode == "전체 덮어쓰기" or _cur_v in (None, "", 0):
                                     _override[_k] = _v
+                            # 인증번호 텍스트가 채워지면 짝 boolean 플래그도 True로 동반 적용
+                            # (번호가 있다 = 인증 받았다는 의미이므로 사용자가 다시 체크할 필요 없음)
+                            for _num_key, _bool_key in (
+                                ("kc인증번호", "kc인증"),
+                                ("전파인증번호", "전파인증"),
+                            ):
+                                if _override.get(_num_key):
+                                    _cur_bool = row.get(_bool_key)
+                                    if _mode == "전체 덮어쓰기" or not _cur_bool:
+                                        _override[_bool_key] = True
                             st.session_state["_spec_override"] = _override
                             st.session_state.pop("_spec_extracted", None)
                             st.success(f"{len(_override)}개 필드 적용. 아래에서 검토 후 '💾 저장'을 누르세요.")
@@ -1450,47 +1461,73 @@ with tab_스펙:
                 st.session_state.pop("_spec_override", None)
                 st.rerun()
 
-    st.subheader("기본 정보")
+    st.subheader("📋 기본 정보")
     c1, c2 = st.columns(2)
     제품명 = c1.text_input("제품명 *", value=row.get("제품명") or "")
     모델명 = c2.text_input("모델명",   value=row.get("모델명") or "")
-
-    c3, c4, c5 = st.columns(3)
+    c3, c4, c5, c6 = st.columns(4)
     카테고리     = c3.text_input("카테고리",     value=row.get("카테고리") or "")
     서브카테고리 = c4.text_input("서브카테고리", value=row.get("서브카테고리") or "")
     원산지       = c5.text_input("원산지",       value=row.get("원산지") or "중국")
-    제조사 = st.text_input("제조사", value=row.get("제조사") or "")
+    제조사       = c6.text_input("제조사",       value=row.get("제조사") or "")
 
-    st.subheader("치수 / 무게")
-    d1, d2, d3, d4 = st.columns(4)
-    가로 = d1.number_input("가로 (cm)", min_value=0.0, value=float(row.get("가로_cm") or 0), format="%.1f")
-    세로 = d2.number_input("세로 (cm)", min_value=0.0, value=float(row.get("세로_cm") or 0), format="%.1f")
-    높이 = d3.number_input("높이 (cm)", min_value=0.0, value=float(row.get("높이_cm") or 0), format="%.1f")
-    무게 = d4.number_input("무게 (g)",  min_value=0.0, value=float(row.get("무게_g")  or 0), format="%.0f")
+    st.divider()
+    st.subheader("📦 재고")
+    s1, s2, s3 = st.columns(3)
+    실시간재고 = s1.number_input("실시간재고", min_value=0, value=int(row.get("실시간재고") or 0))
+    처리후재고 = s2.number_input("처리후재고", min_value=0, value=int(row.get("처리후재고") or 0))
+    재고수량   = s3.number_input("재고수량",   min_value=0, value=int(row.get("재고수량")   or 0))
+    f1, f2, f3 = st.columns(3)
+    재입고예정    = f1.checkbox("재입고 예정", value=bool(row.get("재입고예정")))
+    단종여부      = f2.checkbox("단종",        value=bool(row.get("단종여부")))
+    온라인판매가능 = f3.checkbox(
+        "온라인 판매 가능",
+        value=row.get("온라인판매가능") if row.get("온라인판매가능") is not None else True,
+    )
 
-    st.subheader("소재 / 색상")
-    m1, m2 = st.columns(2)
-    재질   = m1.text_input("재질", value=row.get("재질") or "")
-    색상   = m2.text_input("색상", value=row.get("색상") or "")
-    구성품 = st.text_input("구성품", value=row.get("구성품") or "")
-
-    st.subheader("인증")
-    kc1, kc2 = st.columns([1, 3])
-    kc인증     = kc1.checkbox("KC 인증", value=bool(row.get("kc인증")))
-    kc인증번호 = kc2.text_input("KC 인증번호", value=row.get("kc인증번호") or "", disabled=not kc인증)
-    기타인증   = st.text_input("기타 인증", value=row.get("기타인증") or "")
-
-    st.subheader("가격")
+    st.divider()
+    st.subheader("💰 가격")
     p1, p2, p3, p4 = st.columns(4)
     소매가     = p1.number_input("소매가",     min_value=0, value=int(row.get("소매가")     or 0), step=100)
     도매가     = p2.number_input("도매가",     min_value=0, value=int(row.get("도매가")     or 0), step=100)
     실제가     = p3.number_input("실제가",     min_value=0, value=int(row.get("실제가")     or 0), step=100)
     평균도매가 = p4.number_input("평균도매가", min_value=0, value=int(row.get("평균도매가") or 0), step=100)
 
-    st.subheader("텍스트 콘텐츠")
-    특징     = st.text_area("특징",     value=row.get("특징")     or "", height=100)
-    키워드   = st.text_area("키워드",   value=row.get("키워드")   or "", height=80)
-    치수정보 = st.text_area("치수정보", value=row.get("치수정보") or "", height=80)
+    st.divider()
+    st.subheader("📐 치수 / 무게")
+    d1, d2, d3, d4 = st.columns(4)
+    가로 = d1.number_input("가로 (cm)", min_value=0.0, value=float(row.get("가로_cm") or 0), format="%.1f")
+    세로 = d2.number_input("세로 (cm)", min_value=0.0, value=float(row.get("세로_cm") or 0), format="%.1f")
+    높이 = d3.number_input("높이 (cm)", min_value=0.0, value=float(row.get("높이_cm") or 0), format="%.1f")
+    무게 = d4.number_input("무게 (g)",  min_value=0.0, value=float(row.get("무게_g")  or 0), format="%.0f")
+
+    st.divider()
+    st.subheader("🎨 소재 / 색상")
+    m1, m2, m3 = st.columns(3)
+    재질   = m1.text_input("재질",   value=row.get("재질") or "")
+    색상   = m2.text_input("색상",   value=row.get("색상") or "")
+    구성품 = m3.text_input("구성품", value=row.get("구성품") or "")
+
+    st.divider()
+    st.subheader("✅ 인증")
+    kc1, kc2 = st.columns([1, 3])
+    kc인증     = kc1.checkbox("KC 인증",   value=bool(row.get("kc인증")))
+    kc인증번호 = kc2.text_input("KC 인증번호", value=row.get("kc인증번호") or "", disabled=not kc인증)
+    ep1, ep2 = st.columns([1, 3])
+    전파인증     = ep1.checkbox("전파인증",   value=bool(row.get("전파인증")))
+    전파인증번호 = ep2.text_input("전파인증번호", value=row.get("전파인증번호") or "", disabled=not 전파인증)
+    기타인증 = st.text_input("기타 인증", value=row.get("기타인증") or "")
+
+    st.divider()
+    st.subheader("🔍 검수")
+    ins1, ins2 = st.columns([1, 3])
+    검수필요 = ins1.checkbox("검수 필요", value=bool(row.get("검수완료")))
+    검수메모 = ins2.text_input("검수 메모", value=row.get("검수메모") or "")
+
+    st.divider()
+    st.subheader("📝 판매자 메모")
+    특징   = st.text_area("메모",        value=row.get("특징")   or "", height=80)
+    키워드 = st.text_area("연관 키워드", value=row.get("키워드") or "", height=68)
 
     st.divider()
     _t2_l, _t2_r = st.columns([4, 1])
@@ -1513,6 +1550,8 @@ with tab_스펙:
             "구성품":         구성품        or None,
             "kc인증":         kc인증,
             "kc인증번호":     kc인증번호    or None,
+            "전파인증":       전파인증,
+            "전파인증번호":   전파인증번호  or None,
             "기타인증":       기타인증      or None,
             "소매가":         소매가        or None,
             "도매가":         도매가        or None,
@@ -1520,20 +1559,18 @@ with tab_스펙:
             "평균도매가":     평균도매가    or None,
             "특징":           특징          or None,
             "키워드":         키워드        or None,
-            "치수정보":       치수정보      or None,
+            "검수완료":       검수필요,
+            "검수메모":       검수메모      or None,
+            "실시간재고":     실시간재고,
+            "처리후재고":     처리후재고,
+            "재고수량":       재고수량,
+            "재입고예정":     재입고예정,
+            "단종여부":       단종여부,
+            "온라인판매가능": 온라인판매가능,
             "판매자메모":     _ss.get("sf_판매자메모",     row.get("판매자메모")    ) or None,
-            "검수완료":       _ss.get("sf_검수완료",       bool(row.get("검수완료"))),
-            "검수메모":       _ss.get("sf_검수메모",       row.get("검수메모") or "") or None,
-            "실시간재고":     _ss.get("sf_실시간재고",     int(row.get("실시간재고") or 0)),
-            "처리후재고":     _ss.get("sf_처리후재고",     int(row.get("처리후재고") or 0)),
-            "재고수량":       _ss.get("sf_재고수량",       int(row.get("재고수량")   or 0)),
-            "재입고예정":     _ss.get("sf_재입고예정",     bool(row.get("재입고예정"))),
-            "단종여부":       _ss.get("sf_단종여부",       bool(row.get("단종여부"))),
-            "온라인판매가능": _ss.get("sf_온라인판매가능", row.get("온라인판매가능") if row.get("온라인판매가능") is not None else True),
             "판매채널":       _ss.get("sf_판매채널",       row.get("판매채널") or "") or None,
             "박스재사용":     _ss.get("sf_박스재사용",     bool(row.get("박스재사용"))),
             "주의사항":       _ss.get("sf_주의사항",       row.get("주의사항") or "") or None,
-            "엠군상태":       _ss.get("sf_엠군상태",       row.get("엠군상태") or "미시작"),
         })
     if _t2_r.button("취소", use_container_width=True, key="btn_cancel_tab2"):
         _cancel()
@@ -1558,38 +1595,12 @@ with tab_판매자:
     판매자메모 = st.text_area("판매자 특이사항", value=row.get("판매자메모") or "", height=120,
                                key="sf_판매자메모")
 
-    st.subheader("검수")
-    ins1, ins2 = st.columns([1, 3])
-    검수완료 = ins1.checkbox("검수 완료",  value=bool(row.get("검수완료")), key="sf_검수완료")
-    검수메모 = ins2.text_input("검수 메모", value=row.get("검수메모") or "",  key="sf_검수메모")
-
-    st.subheader("재고")
-    s1, s2, s3 = st.columns(3)
-    실시간재고 = s1.number_input("실시간재고", min_value=0, value=int(row.get("실시간재고") or 0), key="sf_실시간재고")
-    처리후재고 = s2.number_input("처리후재고", min_value=0, value=int(row.get("처리후재고") or 0), key="sf_처리후재고")
-    재고수량   = s3.number_input("재고수량",   min_value=0, value=int(row.get("재고수량")   or 0), key="sf_재고수량")
-
-    f1, f2, f3 = st.columns(3)
-    재입고예정    = f1.checkbox("재입고 예정", value=bool(row.get("재입고예정")), key="sf_재입고예정")
-    단종여부      = f2.checkbox("단종",        value=bool(row.get("단종여부")),   key="sf_단종여부")
-    온라인판매가능 = f3.checkbox(
-        "온라인 판매 가능",
-        value=row.get("온라인판매가능") if row.get("온라인판매가능") is not None else True,
-        key="sf_온라인판매가능",
-    )
-
     st.subheader("판매 조건")
     판매채널   = st.text_input("판매 채널 제한", value=row.get("판매채널") or "",
                                 placeholder="예: 쿠팡, 스마트스토어", key="sf_판매채널")
     박스재사용 = st.checkbox("박스 재사용", value=bool(row.get("박스재사용")), key="sf_박스재사용")
     주의사항   = st.text_area("주의사항",   value=row.get("주의사항") or "", height=80,
                                key="sf_주의사항")
-
-    st.subheader("엠군 상태")
-    _mgoon_opts = ["미시작", "진행중", "완료"]
-    엠군상태 = st.selectbox("엠군상태", _mgoon_opts,
-                             index=_mgoon_opts.index(row.get("엠군상태") or "미시작"),
-                             key="sf_엠군상태")
 
     st.divider()
     _t3_l, _t3_r = st.columns([4, 1])
@@ -1611,6 +1622,8 @@ with tab_판매자:
             "구성품":         구성품        or None,
             "kc인증":         kc인증,
             "kc인증번호":     kc인증번호    or None,
+            "전파인증":       전파인증,
+            "전파인증번호":   전파인증번호  or None,
             "기타인증":       기타인증      or None,
             "소매가":         소매가        or None,
             "도매가":         도매가        or None,
@@ -1618,9 +1631,8 @@ with tab_판매자:
             "평균도매가":     평균도매가    or None,
             "특징":           특징          or None,
             "키워드":         키워드        or None,
-            "치수정보":       치수정보      or None,
             "판매자메모":     판매자메모    or None,
-            "검수완료":       검수완료,
+            "검수완료":       검수필요,
             "검수메모":       검수메모      or None,
             "실시간재고":     실시간재고,
             "처리후재고":     처리후재고,
@@ -1631,10 +1643,126 @@ with tab_판매자:
             "판매채널":       판매채널      or None,
             "박스재사용":     박스재사용,
             "주의사항":       주의사항      or None,
-            "엠군상태":       엠군상태,
         })
     if _t3_r.button("취소", use_container_width=True, key="btn_cancel_tab3"):
         _cancel()
+
+# ─────────────────────────────────────────────────────────
+# 탭 — 엠군 상태 (파이프라인 실행 이력)
+# ─────────────────────────────────────────────────────────
+with tab_엠군:
+    st.subheader("🧪 엠군 파이프라인 실행 이력")
+
+    if _is_temp:
+        st.info("제품을 먼저 저장한 뒤 파이프라인을 실행할 수 있습니다.")
+    else:
+        try:
+            _emgun_storage = get_storage()
+            _runs = _emgun_storage.list_runs_by_product(product_id)
+        except Exception as e:
+            st.error(f"실행 목록 조회 실패: {type(e).__name__}: {e}")
+            _runs = []
+            _emgun_storage = None
+
+        col_a, col_b = st.columns([1, 3])
+        with col_a:
+            if st.button("🚀 새 실행 시작",
+                         type="primary",
+                         use_container_width=True,
+                         key="btn_new_pipeline_run"):
+                spec_for_pipeline = get_product_spec(product_id) or row
+                st.session_state["pipeline_product_spec"] = spec_for_pipeline
+                for _k in (
+                    "current_run_id", "_run_loaded", "targets_01",
+                    "parsed_with_ids", "positioning_02",
+                    "saved_run_id", "selected_target_db_id",
+                ):
+                    st.session_state.pop(_k, None)
+                st.switch_page("pages/2_pipeline.py")
+        with col_b:
+            st.caption(f"이 제품의 누적 실행: **{len(_runs)}개**")
+
+        if _emgun_storage is not None and not _runs:
+            st.info("아직 실행된 파이프라인이 없습니다.")
+
+        for r in _runs:
+            run_id = r["id"]
+            try:
+                summary = _emgun_storage.get_run_summary(run_id)
+            except Exception as e:
+                st.error(f"#{run_id} 요약 조회 실패: {type(e).__name__}: {e}")
+                continue
+            selected = summary["selected_target"]
+
+            if summary["has_positioning"]:
+                badge = "🟢 02 완료"
+            elif summary["target_count"] > 0:
+                badge = "🟡 01만"
+            else:
+                badge = "⚪ 비어있음"
+
+            with st.container(border=True):
+                head_l, head_r = st.columns([2, 3])
+                with head_l:
+                    _ts = (r.get("생성일") or "")[:19].replace("T", " ")
+                    st.markdown(f"**#{run_id}** · {_ts}")
+                    st.caption(f"{badge} · 타겟 후보 {summary['target_count']}개")
+                with head_r:
+                    if selected:
+                        star = "⭐ " if selected.get("추천_여부") else ""
+                        label = (
+                            selected.get("라벨")
+                            or selected.get("캐릭터")
+                            or "(라벨 없음)"
+                        )
+                        st.markdown(
+                            f"**선택 타겟**: {star}{label}  "
+                            f"`{selected.get('모델', '')} #{selected.get('순위', '?')}`"
+                        )
+                    else:
+                        st.caption("선택 타겟: 미선택")
+
+                btn_open, btn_del = st.columns(2)
+                with btn_open:
+                    if st.button(
+                        "📂 이 run 열기",
+                        key=f"open_run_{run_id}",
+                        use_container_width=True,
+                    ):
+                        for _k in (
+                            "pipeline_product_spec", "targets_01",
+                            "parsed_with_ids", "positioning_02",
+                            "saved_run_id", "selected_target_db_id",
+                            "_run_loaded",
+                        ):
+                            st.session_state.pop(_k, None)
+                        st.session_state["current_run_id"] = run_id
+                        st.switch_page("pages/2_pipeline.py")
+                with btn_del:
+                    _del_key = f"del_run_{run_id}"
+                    _confirm_key = f"del_confirm_{run_id}"
+                    if st.session_state.get(_confirm_key):
+                        if st.button(
+                            "정말 삭제하시겠습니까? (한 번 더 클릭)",
+                            key=f"{_del_key}_yes",
+                            type="secondary",
+                            use_container_width=True,
+                        ):
+                            try:
+                                _emgun_storage.delete_run(run_id)
+                                st.session_state.pop(_confirm_key, None)
+                                st.success(f"#{run_id} 삭제 완료")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"삭제 실패: {type(e).__name__}: {e}")
+                    else:
+                        if st.button(
+                            "🗑️ 삭제",
+                            key=_del_key,
+                            use_container_width=True,
+                        ):
+                            st.session_state[_confirm_key] = True
+                            st.rerun()
 
 # ── 삭제 ─────────────────────────────────────────────────
 st.divider()

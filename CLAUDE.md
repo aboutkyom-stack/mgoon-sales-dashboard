@@ -44,6 +44,15 @@
 
 비전패스 같은 정보 추출 작업에서 **카테고리에 갇혀 시야가 좁아지는 현상은 사용자 의도의 정반대**임을 기억할 것.
 
+## 🚫 절대 규칙 — agents/*/core*.md 보호
+
+**`agents/0N_*/core.md`, `core_claude.md`, `core_gemini.md`, `core_gemini_video.md` 등 모든 `core*.md` 파일은 사용자와의 사전 상의·승인 없이 절대 수정·삭제하지 않는다.**
+
+- 이유: core.md는 강의 원본에서 추출한 페르소나의 사고 프레임워크. 강의 본질이 담긴 자료라 임의 변경 시 페르소나 자체가 망가진다.
+- 호출별 작업 범위 조정·강조점 변경은 **`pipeline/loader.py`의 `build_user_input_*`** 또는 UI 측에서만 처리한다 (system prompt는 풀 지식, user input이 호출별 지시).
+- `examples.md`, `expressions.md`, `qa_checklist.md` 등 보조 파일도 동일 규칙 적용 — 사전 승인 없이 수정 금지.
+- 예외: 새 core 파일을 처음 만드는 경우(예: `core_gemini_video.md` 신규 생성)는 사용자 요청·승인 하에 신규 작성 가능.
+
 ## 자주 헷갈리는 포인트
 
 - **상위 "자동화 공장" 폴더의 git**: tistory(자동화 블로그) 작업용. 이 프로젝트와 무관.

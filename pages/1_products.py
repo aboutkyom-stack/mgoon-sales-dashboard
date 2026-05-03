@@ -186,7 +186,7 @@ st.subheader(f"#{chosen_id} · {chosen_row.get('제품명')}{img_badge}")
 
 # ── 제품 액션 버튼 ────────────────────────────────────────
 a1, a2, _ = st.columns([1, 1, 4])
-if a1.button("✏️ 스펙 수정", type="primary", use_container_width=True, key="btn_edit_product"):
+if a1.button("✏️ 작업", type="primary", use_container_width=True, key="btn_edit_product"):
     st.session_state["edit_mode"]       = "edit"
     st.session_state["edit_product_id"] = chosen_id
     st.switch_page("pages/2_product_edit.py")

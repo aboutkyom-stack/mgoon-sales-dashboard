@@ -1,0 +1,8 @@
+{
+  "claude_model_00": "claude-sonnet-4-6",
+  "claude_model_01": "claude-sonnet-4-6",
+  "claude_model_02": "claude-sonnet-4-6",
+  "gemini_model_00": "gemini-2.5-flash",
+  "gemini_model_01": "gemini-2.5-pro",
+  "gemini_model_02": "gemini-2.5-pro"
+}

@@ -41,7 +41,7 @@ DDL_STATEMENTS = [
         deficit          TEXT,
         deficit_source   TEXT,
         purchase_benefit TEXT,
-        urgency          INTEGER,
+        involvement      INTEGER,
         channel          TEXT,
         note             TEXT,
         desire_layer3    TEXT,

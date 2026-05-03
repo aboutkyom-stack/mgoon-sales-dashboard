@@ -10,12 +10,35 @@ Claude는 system 블록에 cache_control을 붙여 prompt caching으로 비용 �
 from __future__ import annotations
 
 import os
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def _log_claude_cache(label: str, resp) -> None:
+    """Claude 응답의 prompt caching 통계를 stderr로 출력.
+
+    cache_read=0, cache_creation>0 → 첫 호출 (캐시 생성, 90% 할인 미적용)
+    cache_read>0                   → 캐시 hit (system prompt 90% 할인 적용)
+    cache_read=0, cache_creation=0 → cache_control 미설정 또는 캐시 미적용
+    """
+    try:
+        u = resp.usage
+        cache_read = getattr(u, "cache_read_input_tokens", 0) or 0
+        cache_created = getattr(u, "cache_creation_input_tokens", 0) or 0
+        inp = getattr(u, "input_tokens", 0) or 0
+        out = getattr(u, "output_tokens", 0) or 0
+        print(
+            f"[claude cache:{label}] read={cache_read} created={cache_created} "
+            f"input={inp} output={out}",
+            file=sys.stderr,
+        )
+    except Exception:
+        pass
 
 
 @lru_cache(maxsize=1)
@@ -58,6 +81,7 @@ def generate_claude(
                  "cache_control": {"type": "ephemeral"}}],
         messages=[{"role": "user", "content": user_input}],
     )
+    _log_claude_cache("text", resp)
     return "".join(
         block.text for block in resp.content if getattr(block, "type", None) == "text"
     )
