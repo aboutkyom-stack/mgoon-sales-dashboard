@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import io
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -49,12 +50,12 @@ from pipeline.models_config import (
     ALL_VP_MODELS,
     CLAUDE_VP_MODELS,
     DEFAULT_EXTRACT_MODEL,
-    DEFAULT_MERGE_MODEL,
     GEMINI_VP_MODELS,
     family_of as _vp_family_of,
 )
 from pipeline.spec_schema import SPEC_FIELDS
 from pipeline.storage import get_storage
+from pipeline.settings import load_판매자특성
 
 # ── 모드 결정 / 임시 레코드 자동 생성 ────────────────────────
 _mode_raw  = st.session_state.get("edit_mode", "new")
@@ -165,6 +166,78 @@ def _save(payload: dict) -> None:
         st.rerun()
     except Exception as _se:
         st.error(f"저장 실패: {type(_se).__name__}: {_se}")
+
+
+def _auto_apply_after_vision(pid: int, 시각설명_text: str) -> tuple[int, int]:
+    """시각설명 저장 직후 자동으로 SPEC_FIELDS + 제품특징_bullet 추출 → 빈 필드만 채우기.
+
+    이미 손으로 채워진 필드는 건드리지 않는다 (안전). bullet은 기존 항목과 중복 제거 후 추가.
+
+    Returns:
+        (반영된 SPEC 필드 수, 추가된 bullet 수). LLM 실패 시 (0, 0).
+    """
+    import json as _json
+
+    from pipeline.settings import load as _load_settings
+    from pipeline.vision_merge import extract_스펙
+
+    if not 시각설명_text or not 시각설명_text.strip():
+        return (0, 0)
+
+    cfg = _load_settings()
+    primary_model = cfg.get("primary_model_00") or "claude-sonnet-4-6"
+
+    try:
+        extracted = extract_스펙(시각설명_text, model=primary_model)
+    except Exception as _ee:
+        st.warning(f"자동 추출 실패: {type(_ee).__name__}: {_ee}")
+        return (0, 0)
+
+    if not isinstance(extracted, dict) or extracted.get("_error"):
+        return (0, 0)
+
+    cur = get_product(pid) or {}
+    payload: dict = {}
+
+    # SPEC_FIELDS — 빈 필드만 채우기
+    for f in SPEC_FIELDS:
+        new_v = extracted.get(f["name"])
+        cur_v = cur.get(f["name"])
+        if new_v is not None and cur_v in (None, "", 0):
+            payload[f["name"]] = new_v
+    # 인증번호 텍스트가 채워지면 짝 boolean 플래그도 동반 (빈 필드일 때만)
+    for num_key, bool_key in (("kc인증번호", "kc인증"), ("전파인증번호", "전파인증")):
+        if payload.get(num_key) and not cur.get(bool_key):
+            payload[bool_key] = True
+
+    spec_count = sum(1 for k in payload if k in {f["name"] for f in SPEC_FIELDS})
+
+    # bullet — 기존 항목과 중복 제거 후 추가
+    bullets_new = extracted.get("_특징_bullet") or []
+    bullet_added = 0
+    if bullets_new:
+        existing = cur.get("제품특징_bullet") or []
+        if isinstance(existing, str):
+            try:
+                existing = _json.loads(existing)
+            except Exception:
+                existing = []
+        if not isinstance(existing, list):
+            existing = []
+        existing_set = set(existing)
+        new_only = [b for b in bullets_new if b not in existing_set]
+        if new_only:
+            payload["제품특징_bullet"] = list(existing) + new_only
+            bullet_added = len(new_only)
+
+    if payload:
+        try:
+            update_상품(pid, payload)
+        except Exception as _ue:
+            st.warning(f"자동 반영 DB 저장 실패: {type(_ue).__name__}: {_ue}")
+            return (0, 0)
+
+    return (spec_count, bullet_added)
 
 
 def _cancel() -> None:
@@ -576,23 +649,54 @@ with tab_이미지:
                     "모든 이미지를 **1번의 API 호출**로 묶어 전송 → 이미지 전체를 종합한 "
                     "시각설명 **1개** 생성. 빠르고 통합적인 결과가 필요할 때 사용하세요."
                 )
+
+                # ── 엔진 선택 영속화: settings.json의 단계 00 키와 양방향 바인딩 ──
+                # 첫 진입 시 settings.json → session_state 초기화. 이후 변경은 on_change로 settings에 저장.
+                from pipeline.settings import load as _vp_settings_load, save as _vp_settings_save
+
+                _cfg_init = _vp_settings_load()
+                if "vp_main_model" not in st.session_state:
+                    _v = _cfg_init.get("primary_model_00") or _ALL_VP_MODELS[0]
+                    st.session_state["vp_main_model"] = _v if _v in _ALL_VP_MODELS else _ALL_VP_MODELS[0]
+                if "vp_sub_model" not in st.session_state:
+                    _v = _cfg_init.get("compare_model_00") or "gemini-2.5-flash"
+                    _fallback_sub = (
+                        _ALL_VP_MODELS[len(_CLAUDE_MODELS)]
+                        if len(_CLAUDE_MODELS) < len(_ALL_VP_MODELS) else _ALL_VP_MODELS[0]
+                    )
+                    st.session_state["vp_sub_model"] = _v if _v in _ALL_VP_MODELS else _fallback_sub
+                if "vp_sub_on" not in st.session_state:
+                    st.session_state["vp_sub_on"] = bool(_cfg_init.get("compare_enabled_00", True))
+
+                def _persist_vp_engines() -> None:
+                    _cfg = _vp_settings_load()
+                    _cfg["primary_model_00"]   = st.session_state.get("vp_main_model", _ALL_VP_MODELS[0])
+                    _cfg["compare_model_00"]   = st.session_state.get("vp_sub_model", _ALL_VP_MODELS[0])
+                    _cfg["compare_enabled_00"] = bool(st.session_state.get("vp_sub_on", True))
+                    _vp_settings_save(_cfg)
+
                 _ec1, _ec2 = st.columns(2)
                 with _ec1:
                     st.markdown("**메인 엔진**")
                     _vp_main_model = st.selectbox(
-                        "메인 모델", _ALL_VP_MODELS, index=0,
+                        "메인 모델", _ALL_VP_MODELS,
                         key="vp_main_model", label_visibility="collapsed",
+                        on_change=_persist_vp_engines,
                     )
                 with _ec2:
                     st.markdown("**서브 엔진**")
                     _sub_c = st.columns([3, 1])
                     with _sub_c[0]:
                         _vp_sub_model = st.selectbox(
-                            "서브 모델", _ALL_VP_MODELS, index=len(_CLAUDE_MODELS),
+                            "서브 모델", _ALL_VP_MODELS,
                             key="vp_sub_model", label_visibility="collapsed",
+                            on_change=_persist_vp_engines,
                         )
                     with _sub_c[1]:
-                        _vp_sub_on = st.toggle("ON", value=True, key="vp_sub_on")
+                        _vp_sub_on = st.toggle(
+                            "ON", key="vp_sub_on",
+                            on_change=_persist_vp_engines,
+                        )
 
                 _run_label = (
                     f"🔍 일괄 실행 ({_vp_main_model}"
@@ -601,10 +705,16 @@ with tab_이미지:
                 )
                 if st.button(_run_label, type="primary", key="btn_vp_run_bulk"):
                     try:
+                        import threading
+
                         from pipeline.drive_client import ACCOUNTS as _ACCTS, build_service as _bsvc, download_file as _dlf
-                        from pipeline.llm import generate_vision_claude, generate_vision_gemini
+                        from pipeline.llm import (
+                            generate_vision_claude,
+                            generate_vision_claude_stream,
+                            generate_vision_gemini,
+                            generate_vision_gemini_stream,
+                        )
                         from pipeline.loader import build_vision_input
-                        from concurrent.futures import ThreadPoolExecutor
 
                         _acct_label = _vp_images[0].get("계정") or _ACCTS[0]["label"]
                         _svc = _bsvc(_acct_label)
@@ -623,31 +733,66 @@ with tab_이미지:
                         _cur_main  = st.session_state.get("vp_editor_claude" if _fam_main == "claude" else "vp_editor_gemini") or _vp_load_prompt(_vp_main_model)
                         _cur_sub   = st.session_state.get("vp_editor_claude" if _fam_sub == "claude" else "vp_editor_gemini") or _vp_load_prompt(_vp_sub_model)
 
-                        def _run_engine(model: str, prompt: str) -> str:
+                        def _stream_engine(model: str, prompt: str):
+                            if _vp_family(model) == "claude":
+                                yield from generate_vision_claude_stream(
+                                    prompt, _image_data, _user_text, model=model,
+                                )
+                            else:
+                                yield from generate_vision_gemini_stream(
+                                    prompt, _image_data, _user_text, model=model,
+                                )
+
+                        def _run_engine_sync(model: str, prompt: str) -> str:
                             if _vp_family(model) == "claude":
                                 return generate_vision_claude(prompt, _image_data, _user_text, model=model)
                             return generate_vision_gemini(prompt, _image_data, _user_text, model=model)
 
                         _vp_res: dict[str, str] = {}
+
+                        # 서브 ON이면 백그라운드 thread로 비스트리밍 호출 (UI는 메인 스트리밍만 표시)
+                        _sub_state: dict = {"text": "", "err": None, "done": False}
+                        _sub_thread = None
                         if _vp_sub_on:
-                            with st.spinner(f"{_vp_main_model} + {_vp_sub_model} 병렬 분석 중…"):
-                                with ThreadPoolExecutor(max_workers=2) as _ex:
-                                    _fm = _ex.submit(_run_engine, _vp_main_model, _cur_main)
-                                    _fs = _ex.submit(_run_engine, _vp_sub_model,  _cur_sub)
-                                    try:
-                                        _vp_res["main"] = _fm.result()
-                                    except Exception as _e:
-                                        _vp_res["main"] = f"[ERROR] {_e}"
-                                    try:
-                                        _vp_res["sub"] = _fs.result()
-                                    except Exception as _e:
-                                        _vp_res["sub"] = f"[ERROR] {_e}"
-                        else:
-                            with st.spinner(f"{_vp_main_model} 분석 중…"):
+                            def _run_sub():
                                 try:
-                                    _vp_res["main"] = _run_engine(_vp_main_model, _cur_main)
-                                except Exception as _e:
-                                    _vp_res["main"] = f"[ERROR] {_e}"
+                                    _sub_state["text"] = _run_engine_sync(_vp_sub_model, _cur_sub)
+                                except Exception as _se:
+                                    _sub_state["err"] = f"[ERROR] {type(_se).__name__}: {_se}"
+                                finally:
+                                    _sub_state["done"] = True
+                            _sub_thread = threading.Thread(target=_run_sub, daemon=True)
+                            _sub_thread.start()
+
+                        # 메인 스트리밍 표시
+                        with st.container(border=True):
+                            st.caption(f"🟢 **{_vp_main_model}** 분석 중 — 응답을 실시간으로 받는 중")
+                            _live_area = st.empty()
+                        _main_acc = ""
+                        _last_render_len = 0
+                        try:
+                            for _chunk in _stream_engine(_vp_main_model, _cur_main):
+                                _main_acc += _chunk
+                                # 30자 또는 줄바꿈마다 갱신 (너무 잦은 갱신 방지)
+                                if (len(_main_acc) - _last_render_len) >= 30 or _chunk.endswith("\n"):
+                                    _live_area.markdown(
+                                        f"```\n{_main_acc}\n```"
+                                    )
+                                    _last_render_len = len(_main_acc)
+                            _live_area.markdown(f"```\n{_main_acc}\n```")
+                            _vp_res["main"] = _main_acc
+                        except Exception as _e:
+                            _vp_res["main"] = f"[ERROR] {type(_e).__name__}: {_e}"
+                            st.error(f"메인 엔진 실패: {_e}")
+
+                        # 서브 결과 대기
+                        if _sub_thread is not None:
+                            with st.spinner(f"⏳ 서브 엔진 **{_vp_sub_model}** 결과 대기 중…"):
+                                _sub_thread.join()
+                            if _sub_state["err"]:
+                                _vp_res["sub"] = _sub_state["err"]
+                            else:
+                                _vp_res["sub"] = _sub_state["text"]
 
                         st.session_state["vp_results"]    = _vp_res
                         st.session_state["vp_main_label"] = _vp_main_model
@@ -693,6 +838,7 @@ with tab_이미지:
                             if st.button("📥 메인 반영", key="vp_btn_use_main"):
                                 st.session_state["vp_pending"] = {
                                     "items": [(_vp_main_lbl, _vp_stored.get("main", ""))],
+                                    "mode": "bulk",
                                 }
                                 st.rerun()
                         with _r2:
@@ -703,6 +849,7 @@ with tab_이미지:
                             if st.button("📥 서브 반영", key="vp_btn_use_sub"):
                                 st.session_state["vp_pending"] = {
                                     "items": [(_vp_sub_lbl, _vp_stored.get("sub", ""))],
+                                    "mode": "bulk",
                                 }
                                 st.rerun()
                         # 3-way: 메인+서브 동시 반영
@@ -713,6 +860,7 @@ with tab_이미지:
                                     (_vp_main_lbl, _vp_stored.get("main", "")),
                                     (_vp_sub_lbl,  _vp_stored.get("sub", "")),
                                 ],
+                                "mode": "bulk",
                             }
                             st.rerun()
                     else:
@@ -723,6 +871,7 @@ with tab_이미지:
                         if st.button("📥 결과 반영", key="vp_btn_use_main_only"):
                             st.session_state["vp_pending"] = {
                                 "items": [(_vp_main_lbl, _vp_stored.get("main", ""))],
+                                "mode": "bulk",
                             }
                             st.rerun()
 
@@ -786,14 +935,23 @@ with tab_이미지:
                         _para_results: list[tuple[dict, str]] = []
                         _para_errors:  list[str] = []
                         _max_workers = min(len(_vp_images), 5)
-                        with st.spinner(f"{_para_model} — {len(_vp_images)}장 병렬 분석 중…"):
-                            with ThreadPoolExecutor(max_workers=_max_workers) as _ex3:
-                                _futs = {_ex3.submit(_run_single_img, f): f for f in _vp_images}
-                                for _fut in as_completed(_futs):
-                                    try:
-                                        _para_results.append(_fut.result())
-                                    except Exception as _fe:
-                                        _para_errors.append(f"{_futs[_fut].get('파일명', '?')}: {_fe}")
+                        _para_prog = st.progress(
+                            0, text=f"{_para_model} — 0/{len(_vp_images)} 완료"
+                        )
+                        _done_n = 0
+                        with ThreadPoolExecutor(max_workers=_max_workers) as _ex3:
+                            _futs = {_ex3.submit(_run_single_img, f): f for f in _vp_images}
+                            for _fut in as_completed(_futs):
+                                try:
+                                    _para_results.append(_fut.result())
+                                except Exception as _fe:
+                                    _para_errors.append(f"{_futs[_fut].get('파일명', '?')}: {_fe}")
+                                _done_n += 1
+                                _para_prog.progress(
+                                    _done_n / len(_vp_images),
+                                    text=f"{_para_model} — {_done_n}/{len(_vp_images)} 완료",
+                                )
+                        _para_prog.empty()
 
                         # DB 이력 저장
                         _para_saved = 0
@@ -851,7 +1009,10 @@ with tab_이미지:
                             if st.button("▶ 실행", key=f"vp_img_run_{_fid}", use_container_width=True):
                                 try:
                                     from pipeline.drive_client import ACCOUNTS as _ACCTS2, build_service as _bsvc2, download_file as _dlf2
-                                    from pipeline.llm import generate_vision_claude, generate_vision_gemini
+                                    from pipeline.llm import (
+                                        generate_vision_claude_stream,
+                                        generate_vision_gemini_stream,
+                                    )
                                     from pipeline.loader import build_vision_input
 
                                     _acct2 = _img_f.get("계정") or _ACCTS2[0]["label"]
@@ -861,12 +1022,34 @@ with tab_이미지:
                                         "vp_editor_claude" if _fam2 == "claude" else "vp_editor_gemini"
                                     ) or _vp_load_prompt(_img_model)
 
-                                    with st.spinner(f"{_img_model} 분석 중…"):
+                                    with st.spinner("이미지 다운로드 중…"):
                                         _b2, _m2 = _dlf2(_svc2, _fid)
+
+                                    with st.container(border=True):
+                                        st.caption(f"🟢 **{_img_model}** 분석 중 — 응답 실시간 수신")
+                                        _live2 = st.empty()
+                                    _acc2 = ""
+                                    _last_len2 = 0
+                                    try:
                                         if _fam2 == "claude":
-                                            _res2 = generate_vision_claude(_prompt2, [(_b2, _m2)], build_vision_input(row), model=_img_model)
+                                            _gen2 = generate_vision_claude_stream(
+                                                _prompt2, [(_b2, _m2)], build_vision_input(row),
+                                                model=_img_model,
+                                            )
                                         else:
-                                            _res2 = generate_vision_gemini(_prompt2, [(_b2, _m2)], build_vision_input(row), model=_img_model)
+                                            _gen2 = generate_vision_gemini_stream(
+                                                _prompt2, [(_b2, _m2)], build_vision_input(row),
+                                                model=_img_model,
+                                            )
+                                        for _ck in _gen2:
+                                            _acc2 += _ck
+                                            if (len(_acc2) - _last_len2) >= 30 or _ck.endswith("\n"):
+                                                _live2.markdown(f"```\n{_acc2}\n```")
+                                                _last_len2 = len(_acc2)
+                                        _live2.markdown(f"```\n{_acc2}\n```")
+                                        _res2 = _acc2
+                                    except Exception as _se2:
+                                        _res2 = f"[ERROR] {type(_se2).__name__}: {_se2}"
 
                                     # DB 이력에 영구 저장
                                     insert_비전패스_이력(
@@ -917,6 +1100,7 @@ with tab_이미지:
                                                 ):
                                                     st.session_state["vp_pending"] = {
                                                         "items": [(_h["모델명"], _h.get("결과", ""))],
+                                                        "mode": "partial",
                                                     }
                                                     st.rerun()
                                             with _bc2:
@@ -964,7 +1148,10 @@ with tab_이미지:
                                      use_container_width=True, key="btn_pending_save_new"):
                             try:
                                 update_시각설명(product_id, _val)
-                                st.success("저장 완료!")
+                                with st.spinner("🤖 스펙·기타 특징 자동 추출 중…"):
+                                    _spec_n, _bul_n = _auto_apply_after_vision(product_id, _val)
+                                _msg = f"저장 완료! 자동 반영: 스펙 {_spec_n}개 / bullet {_bul_n}개"
+                                st.success(_msg)
                                 st.session_state.pop("vp_pending", None)
                                 st.session_state.pop("vp_results", None)
                                 st.rerun()
@@ -976,172 +1163,243 @@ with tab_이미지:
                             st.session_state.pop("vp_pending", None)
                             st.rerun()
                 else:
-                    # 케이스 2: 기존 있음 → AI 비교 → 일치/충돌 분리 UI
-                    st.info(f"🔀 기존 시각설명 vs 신규({_items_label}) 비교")
+                    # 케이스 2: 기존 시각설명 있음 → mode에 따라 분기
+                    #   - "partial" (이미지별 결과·동영상 결과 등 보완성 패스): 누적 append
+                    #   - "bulk"    (일괄 재실행 결과): 시각설명 덮어쓰기 + 스펙 필드 항목별 diff
+                    _pmode = _pending.get("mode", "partial")  # 기본은 안전한 partial
 
-                    # 비교 프롬프트 편집
-                    _merge_prompt_path = _AGENTS_DIR / "merge.md"
-                    _sk_merge = "vp_merge_prompt"
-                    if _sk_merge not in st.session_state:
-                        st.session_state[_sk_merge] = _merge_prompt_path.read_text(encoding="utf-8")
-                    if st.checkbox("📄 비교 프롬프트 편집 (merge.md)", value=False, key="vp_show_merge_prompt"):
-                        _merge_prompt_val = st.text_area(
-                            "merge.md",
-                            value=st.session_state[_sk_merge],
-                            height=320,
-                            key="vp_editor_merge",
-                            label_visibility="collapsed",
-                        )
-                        if st.button("💾 비교 프롬프트 저장", key="vp_btn_save_merge"):
-                            _merge_prompt_path.write_text(_merge_prompt_val, encoding="utf-8")
-                            st.session_state[_sk_merge] = _merge_prompt_val
-                            st.success("저장!")
-
-                    _mc1, _mc2 = st.columns([3, 1])
-                    with _mc1:
-                        _merge_model = st.selectbox(
-                            "비교 분석 모델",
-                            _ALL_VP_MODELS,
-                            index=_ALL_VP_MODELS.index(DEFAULT_MERGE_MODEL)
-                                  if DEFAULT_MERGE_MODEL in _ALL_VP_MODELS else 0,
-                            key="vp_merge_model",
-                        )
-                    with _mc2:
-                        _do_compare = st.button(
-                            "🔍 비교 분석 실행",
-                            type="primary", use_container_width=True,
-                            key="btn_pending_compare",
+                    if _pmode == "partial":
+                        # ── partial: append 정책 ──
+                        st.info(f"📎 신규 결과({_items_label})를 기존 시각설명 뒤에 누적 추가합니다.")
+                        st.caption(
+                            "부분 비전패스 결과는 기존 시각설명을 덮어쓰지 않고 라벨과 함께 아래에 추가됩니다. "
+                            "필요하면 텍스트를 직접 수정한 뒤 저장하세요. "
+                            "스펙 필드는 누적된 전체 텍스트에서 **빈 칸만** 자동 채워집니다 (기존 값 보호)."
                         )
 
-                    if _do_compare:
-                        try:
-                            from pipeline.vision_merge import compare_시각설명
-                            with st.spinner(f"{_merge_model} 비교 중…"):
-                                _new_arg = (
-                                    _items[0][1] if len(_items) == 1
-                                    else _items  # 3-way 이상
-                                )
-                                _cmp = compare_시각설명(_saved_desc, _new_arg, model=_merge_model)
-                            st.session_state["vp_compare_result"] = _cmp
-                        except Exception as _ce:
-                            st.error(f"비교 실패: {_ce}")
+                        _now_label = datetime.now().strftime("%m-%d %H:%M")
+                        _appended_parts = [_saved_desc.rstrip()]
+                        for _lbl, _txt in _items:
+                            _appended_parts.append(
+                                f"\n──── [부분 보충 · {_lbl} · {_now_label}]\n{(_txt or '').strip()}"
+                            )
+                        _initial_appended = "\n".join(_appended_parts)
 
-                    _cmp = st.session_state.get("vp_compare_result")
-                    if _cmp:
-                        if _cmp.get("_error"):
-                            st.error(f"파싱 실패: {_cmp.get('_error')}")
-                            st.markdown("**LLM 원본 응답 (디버깅용)**")
-                            st.code(_cmp.get("_raw", ""), language=None)
+                        _val = st.text_area(
+                            "누적된 시각설명 (편집 가능)",
+                            value=_initial_appended, height=360, key="vp_pending_appended",
+                        )
+
+                        _bc1, _bc2 = st.columns([3, 1])
+                        with _bc1:
+                            if st.button(
+                                "💾 시각설명으로 저장",
+                                type="primary", use_container_width=True,
+                                key="btn_pending_save_appended",
+                            ):
+                                try:
+                                    update_시각설명(product_id, _val)
+                                    with st.spinner("🤖 스펙·기타 특징 자동 추출 중…"):
+                                        _spec_n, _bul_n = _auto_apply_after_vision(product_id, _val)
+                                    st.success(f"저장 완료! 자동 반영: 스펙 {_spec_n}개 / bullet {_bul_n}개")
+                                    st.session_state.pop("vp_pending", None)
+                                    st.session_state.pop("vp_results", None)
+                                    st.rerun()
+                                except Exception as _e:
+                                    st.error(f"저장 실패: {_e}")
+                        with _bc2:
+                            if st.button(
+                                "❌ 취소", use_container_width=True,
+                                key="btn_pending_cancel_appended",
+                            ):
+                                st.session_state.pop("vp_pending", None)
+                                st.rerun()
+                    else:
+                        # ── bulk: 시각설명 덮어쓰기 + 스펙 필드 항목별 diff ──
+                        st.info(
+                            f"🔄 일괄 재실행 결과({_items_label})로 **시각설명 덮어쓰기** + "
+                            "스펙 필드 변경분 항목별 검토"
+                        )
+                        st.caption(
+                            "기존 시각설명을 신규로 교체합니다. 스펙 필드는 신규 결과로부터 추출해 "
+                            "**기존과 다른 항목만** 표시 — 항목별로 [기존 / 신규 / 직접 입력]을 선택하세요."
+                        )
+
+                        # 신규 시각설명 (단일 또는 다중 결과)
+                        if len(_items) == 1:
+                            _new_desc_default = _items[0][1] or ""
                         else:
-                            # 일치 항목 — 편집 가능 텍스트
-                            st.markdown("#### ✅ 일치/통합 항목")
-                            _agreed_val = st.text_area(
-                                "일치 텍스트 (편집 가능)",
-                                value=_cmp.get("일치", ""),
-                                height=200,
-                                key="vp_pending_agreed",
+                            _new_desc_default = "\n\n".join(
+                                f"[{lbl}]\n{(txt or '').strip()}" for lbl, txt in _items
                             )
 
-                            # 충돌 항목 — 라디오 선택
-                            _conflicts = _cmp.get("충돌", [])
-                            _resolved: dict[int, str] = {}
-                            if _conflicts:
-                                st.markdown(f"#### ⚠️ 충돌 항목 ({len(_conflicts)}건 — 각 항목 선택 필요)")
-                                for _ci, _cf in enumerate(_conflicts):
-                                    _항목 = _cf.get("항목", f"항목{_ci+1}")
-                                    _기존 = _cf.get("기존", "") or ""
-                                    _신규 = _cf.get("신규", "") or ""
-                                    _메모 = _cf.get("메모", "") or ""
+                        _new_desc_val = st.text_area(
+                            "신규 시각설명 (편집 가능 — 저장 시 기존 시각설명을 이 내용으로 덮어씁니다)",
+                            value=_new_desc_default, height=240,
+                            key="vp_pending_bulk_desc",
+                        )
+
+                        # 스펙 필드 추출 (첫 진입 시 자동 1회 호출. 사용자가 텍스트 수정 후 재추출은 버튼)
+                        _ext = st.session_state.get("_spec_extracted_bulk")
+                        _ec1, _ec2 = st.columns([3, 1])
+                        with _ec2:
+                            if st.button("🔄 다시 추출", key="btn_bulk_re_extract",
+                                         use_container_width=True,
+                                         help="시각설명 텍스트를 수정한 뒤 누르면 스펙 필드를 다시 추출합니다."):
+                                st.session_state.pop("_spec_extracted_bulk", None)
+                                _ext = None
+
+                        if _ext is None:
+                            from pipeline.settings import load as _ls_bulk
+                            from pipeline.vision_merge import extract_스펙
+                            _cfg_bulk = _ls_bulk()
+                            _ext_model = _cfg_bulk.get("primary_model_00") or "claude-sonnet-4-6"
+                            with st.spinner(f"🤖 {_ext_model} 으로 신규 시각설명에서 스펙 필드 추출 중…"):
+                                try:
+                                    _ext = extract_스펙(_new_desc_val, model=_ext_model)
+                                except Exception as _ee:
+                                    _ext = {"_error": f"{type(_ee).__name__}: {_ee}"}
+                            st.session_state["_spec_extracted_bulk"] = _ext
+
+                        if _ext.get("_error"):
+                            st.error(f"스펙 추출 실패: {_ext.get('_error')}")
+                            if _ext.get("_raw"):
+                                with st.expander("LLM 원본 응답"):
+                                    st.code(_ext.get("_raw"), language=None)
+                        else:
+                            # 정규화 후 diff 계산
+                            def _norm_val(v) -> str:
+                                if v is None:
+                                    return ""
+                                if isinstance(v, (int, float)) and v == 0:
+                                    return ""
+                                return str(v).strip()
+
+                            _diff_rows = []
+                            for _f in SPEC_FIELDS:
+                                _name = _f["name"]
+                                _new_v = _ext.get(_name)
+                                _cur_v = row.get(_name)
+                                if _norm_val(_cur_v) != _norm_val(_new_v):
+                                    _diff_rows.append({
+                                        "f": _f, "name": _name, "label": _f["label"],
+                                        "cur": _cur_v, "new": _new_v,
+                                    })
+
+                            st.markdown(f"#### 🔍 스펙 필드 변경분 ({len(_diff_rows)}건)")
+
+                            _resolved_fields: dict[str, object] = {}
+                            if not _diff_rows:
+                                st.success("기존과 동일한 값들입니다. 변경할 필드 없음.")
+                            else:
+                                for _di, _d in enumerate(_diff_rows):
                                     with st.container(border=True):
-                                        st.markdown(f"**{_항목}**")
-                                        if _메모:
-                                            st.caption(f"💡 {_메모}")
+                                        st.markdown(f"**{_d['label']}**")
+                                        _cur_disp = "(없음)" if _d["cur"] in (None, "", 0) else str(_d["cur"])
+                                        _new_disp = "(없음)" if _d["new"] in (None, "", 0) else str(_d["new"])
                                         _opts = [
-                                            f"기존: {_기존}",
-                                            f"신규: {_신규}",
+                                            f"기존 유지: {_cur_disp}",
+                                            f"신규 적용: {_new_disp}",
                                             "직접 입력",
                                         ]
-                                        _choice = st.radio(
-                                            "선택",
-                                            _opts,
-                                            key=f"vp_conf_radio_{_ci}",
+                                        _ch = st.radio(
+                                            "선택", _opts,
+                                            key=f"vp_diff_radio_{_di}",
                                             label_visibility="collapsed",
-                                            horizontal=False,
+                                            index=1,  # 기본 = 신규 적용
                                         )
-                                        if _choice.startswith("기존"):
-                                            _resolved[_ci] = f"{_항목}: {_기존}"
-                                        elif _choice.startswith("신규"):
-                                            _resolved[_ci] = f"{_항목}: {_신규}"
+                                        if _ch.startswith("기존"):
+                                            _resolved_fields[_d["name"]] = _d["cur"]
+                                        elif _ch.startswith("신규"):
+                                            _resolved_fields[_d["name"]] = _d["new"]
                                         else:
-                                            _custom = st.text_input(
-                                                f"{_항목} 직접 입력",
-                                                key=f"vp_conf_custom_{_ci}",
+                                            _seed = _new_disp if _new_disp != "(없음)" else (
+                                                _cur_disp if _cur_disp != "(없음)" else ""
+                                            )
+                                            _custom_v = st.text_input(
+                                                f"{_d['label']} 직접 입력",
+                                                value=_seed,
+                                                key=f"vp_diff_custom_{_di}",
                                                 label_visibility="collapsed",
                                             )
-                                            _resolved[_ci] = f"{_항목}: {_custom}" if _custom else ""
-                            else:
-                                st.success("충돌 항목 없음. 일치 텍스트를 그대로 저장하면 됩니다.")
+                                            if _d["f"]["type"] == "number":
+                                                try:
+                                                    if _custom_v == "":
+                                                        _resolved_fields[_d["name"]] = None
+                                                    elif "." in _custom_v:
+                                                        _resolved_fields[_d["name"]] = float(_custom_v)
+                                                    else:
+                                                        _resolved_fields[_d["name"]] = int(_custom_v)
+                                                except Exception:
+                                                    _resolved_fields[_d["name"]] = None
+                                            else:
+                                                _resolved_fields[_d["name"]] = _custom_v or None
 
-                            # 최종 저장
+                            # 신규 bullet 미리보기
+                            _new_bullets = _ext.get("_특징_bullet") or []
+                            _cur_bullets_raw = row.get("제품특징_bullet") or []
+                            if isinstance(_cur_bullets_raw, str):
+                                try:
+                                    _cur_bullets_raw = json.loads(_cur_bullets_raw)
+                                except Exception:
+                                    _cur_bullets_raw = []
+                            if not isinstance(_cur_bullets_raw, list):
+                                _cur_bullets_raw = []
+                            _cur_bullet_set = set(_cur_bullets_raw)
+                            _new_bullets_only = [b for b in _new_bullets if b not in _cur_bullet_set]
+                            if _new_bullets_only:
+                                st.markdown(f"#### ➕ 신규 추가 가능한 bullet ({len(_new_bullets_only)}건)")
+                                for _nb in _new_bullets_only:
+                                    st.markdown(f"- {_nb}")
+
+                            # 저장
                             _bc1, _bc2 = st.columns([3, 1])
                             with _bc1:
                                 if st.button(
-                                    "✅ 최종 적용 & 저장",
+                                    "✅ 시각설명 덮어쓰기 + 변경 적용 & 저장",
                                     type="primary", use_container_width=True,
-                                    key="btn_pending_finalize",
+                                    key="btn_pending_save_bulk",
                                 ):
-                                    _parts = [_agreed_val.strip()] if _agreed_val.strip() else []
-                                    if _resolved:
-                                        _parts.append("\n[충돌 해결]")
-                                        for _ri in sorted(_resolved.keys()):
-                                            _line = _resolved[_ri].strip()
-                                            if _line:
-                                                _parts.append(f"• {_line}")
-                                    _final_text = "\n".join(_parts).strip()
-                                    if not _final_text:
-                                        st.error("저장할 내용이 비어있습니다.")
-                                    else:
-                                        try:
-                                            update_시각설명(product_id, _final_text)
-                                            st.success("저장 완료!")
-                                            st.session_state.pop("vp_pending", None)
-                                            st.session_state.pop("vp_compare_result", None)
-                                            st.session_state.pop("vp_results", None)
-                                            st.rerun()
-                                        except Exception as _e:
-                                            st.error(f"저장 실패: {_e}")
+                                    try:
+                                        update_시각설명(product_id, _new_desc_val)
+                                        _payload: dict = {}
+                                        for _name, _val_resolved in _resolved_fields.items():
+                                            _cur_v = row.get(_name)
+                                            if _norm_val(_cur_v) != _norm_val(_val_resolved):
+                                                _payload[_name] = _val_resolved
+                                        # 인증번호 텍스트가 신규 채워지면 짝 boolean도 동반
+                                        for _num_k, _bool_k in (
+                                            ("kc인증번호", "kc인증"),
+                                            ("전파인증번호", "전파인증"),
+                                        ):
+                                            if _payload.get(_num_k) and not row.get(_bool_k):
+                                                _payload[_bool_k] = True
+                                        # bullet 머지 (기존 + 신규 추가분)
+                                        _bul_added_n = 0
+                                        if _new_bullets_only:
+                                            _payload["제품특징_bullet"] = list(_cur_bullets_raw) + _new_bullets_only
+                                            _bul_added_n = len(_new_bullets_only)
+                                        if _payload:
+                                            update_상품(product_id, _payload)
+                                        st.success(
+                                            f"저장 완료! 시각설명 덮어씀 · "
+                                            f"필드 변경 {len(_payload) - (1 if _bul_added_n else 0)}개 · "
+                                            f"신규 bullet {_bul_added_n}개"
+                                        )
+                                        st.session_state.pop("vp_pending", None)
+                                        st.session_state.pop("_spec_extracted_bulk", None)
+                                        st.session_state.pop("vp_results", None)
+                                        st.rerun()
+                                    except Exception as _e:
+                                        st.error(f"저장 실패: {_e}")
                             with _bc2:
                                 if st.button(
-                                    "❌ 취소",
-                                    use_container_width=True,
-                                    key="btn_pending_cancel",
+                                    "❌ 취소", use_container_width=True,
+                                    key="btn_pending_cancel_bulk",
                                 ):
                                     st.session_state.pop("vp_pending", None)
-                                    st.session_state.pop("vp_compare_result", None)
+                                    st.session_state.pop("_spec_extracted_bulk", None)
                                     st.rerun()
-
-                    # 비교 분석 전: 신규 텍스트 미리보기
-                    if not _cmp:
-                        with st.container(border=True):
-                            st.markdown("**기존 시각설명 미리보기**")
-                            st.text_area(
-                                "기존",
-                                value=_saved_desc, height=140,
-                                key="vp_preview_saved", disabled=True,
-                                label_visibility="collapsed",
-                            )
-                        for _pi, (lbl, txt) in enumerate(_items):
-                            with st.container(border=True):
-                                st.markdown(f"**신규: {lbl}**")
-                                st.text_area(
-                                    "신규",
-                                    value=txt, height=140,
-                                    key=f"vp_preview_new_{_pi}", disabled=True,
-                                    label_visibility="collapsed",
-                                )
-                        if st.button("❌ 반영 취소", key="btn_pending_cancel_pre"):
-                            st.session_state.pop("vp_pending", None)
-                            st.rerun()
             else:
                 # 평소: 저장된 시각설명을 직접 편집/저장만 가능
                 if _saved_desc:
@@ -1154,7 +1412,9 @@ with tab_이미지:
                     if st.button("💾 시각설명 저장", key="btn_save_vision"):
                         try:
                             update_시각설명(product_id, _시각설명_val)
-                            st.success("저장 완료!")
+                            with st.spinner("🤖 스펙·기타 특징 자동 추출 중…"):
+                                _spec_n, _bul_n = _auto_apply_after_vision(product_id, _시각설명_val)
+                            st.success(f"저장 완료! 자동 반영: 스펙 {_spec_n}개 / bullet {_bul_n}개")
                             st.rerun()
                         except Exception as _e:
                             st.error(f"저장 실패: {_e}")
@@ -1328,6 +1588,7 @@ with tab_이미지:
                                             st.session_state["vp_pending"] = {
                                                 "items": [(f"동영상 {_vname}", _h.get("결과", ""))],
                                                 "applied_at": datetime.now().isoformat(),
+                                                "mode": "partial",
                                             }
                                             st.rerun()
                                     with _bh2:
@@ -1357,7 +1618,11 @@ with tab_스펙:
     # ── 스펙 자동 추출 (4-C) ──────────────────────────────
     _saved_desc_for_extract = row.get("시각설명") or ""
     if _saved_desc_for_extract:
-        with st.expander("🤖 시각설명 → 스펙 필드 자동 추출", expanded=False):
+        with st.expander("🤖 시각설명 → 스펙 필드 자동 추출 (수동 재실행)", expanded=False):
+            st.caption(
+                "시각설명 저장 시 자동으로 1회 실행됩니다. "
+                "이 버튼은 시각설명 수정 후 재실행하거나 '전체 덮어쓰기'로 다시 채울 때 사용."
+            )
             _ec1, _ec2 = st.columns([3, 1])
             with _ec1:
                 _extract_model = st.selectbox(
@@ -1408,6 +1673,13 @@ with tab_스펙:
                     else:
                         st.info("추출된 값이 없거나 모두 빈 값입니다.")
 
+                    # 기타 제품 특징 (bullet) 미리보기
+                    _extracted_bullets = _extracted.get("_특징_bullet") or []
+                    if _extracted_bullets:
+                        st.markdown("**기타 제품 특징 후보 (bullet)**")
+                        for _b in _extracted_bullets:
+                            st.markdown(f"- {_b}")
+
                     _mode = st.radio(
                         "적용 방식",
                         ["빈 필드만 채우기", "전체 덮어쓰기"],
@@ -1439,8 +1711,31 @@ with tab_스펙:
                                     if _mode == "전체 덮어쓰기" or not _cur_bool:
                                         _override[_bool_key] = True
                             st.session_state["_spec_override"] = _override
+
+                            # 기타 제품 특징 (bullet) 머지
+                            _bullets_new = _extracted.get("_특징_bullet") or []
+                            _bullet_msg = ""
+                            if _bullets_new:
+                                _bullets_cur = row.get("제품특징_bullet") or []
+                                if isinstance(_bullets_cur, str):
+                                    try:
+                                        _bullets_cur = json.loads(_bullets_cur)
+                                    except Exception:
+                                        _bullets_cur = []
+                                if not isinstance(_bullets_cur, list):
+                                    _bullets_cur = []
+                                if _mode == "전체 덮어쓰기":
+                                    _merged = list(_bullets_new)
+                                else:
+                                    _existing_set = set(_bullets_cur)
+                                    _merged = list(_bullets_cur) + [
+                                        b for b in _bullets_new if b not in _existing_set
+                                    ]
+                                st.session_state["ta_제품특징_bullet"] = "\n".join(_merged)
+                                _bullet_msg = f", 기타 특징 bullet {len(_bullets_new)}개 반영"
+
                             st.session_state.pop("_spec_extracted", None)
-                            st.success(f"{len(_override)}개 필드 적용. 아래에서 검토 후 '💾 저장'을 누르세요.")
+                            st.success(f"{len(_override)}개 필드 적용{_bullet_msg}. 아래에서 검토 후 '💾 저장'을 누르세요.")
                             st.rerun()
                     with _ac2:
                         if st.button("❌ 취소", use_container_width=True, key="btn_extract_cancel"):
@@ -1463,13 +1758,23 @@ with tab_스펙:
 
     st.subheader("📋 기본 정보")
     c1, c2 = st.columns(2)
-    제품명 = c1.text_input("제품명 *", value=row.get("제품명") or "")
-    모델명 = c2.text_input("모델명",   value=row.get("모델명") or "")
+    제품명 = c1.text_input(
+        "제품명 (내부명) *",
+        value=row.get("제품명") or "",
+        help="판매자가 사내에서 부르는 이름. 외부에 노출되는 상품명과 별개입니다.",
+    )
+    모델명 = c2.text_input("모델명",   value=row.get("모델명") or "",
+                          help="패키지/본체에 표기된 모델 번호 (비전패스가 자동 추출)")
     c3, c4, c5, c6 = st.columns(4)
     카테고리     = c3.text_input("카테고리",     value=row.get("카테고리") or "")
     서브카테고리 = c4.text_input("서브카테고리", value=row.get("서브카테고리") or "")
     원산지       = c5.text_input("원산지",       value=row.get("원산지") or "중국")
     제조사       = c6.text_input("제조사",       value=row.get("제조사") or "")
+    c7, c8 = st.columns(2)
+    수입자       = c7.text_input("수입자",       value=row.get("수입자") or "",
+                                help="수입업체명. 패키지 뒷면에 명시된 경우 입력")
+    사용연령     = c8.text_input("사용연령",     value=row.get("사용연령") or "",
+                                placeholder="예: 3세 이상, 만 6세부터")
 
     st.divider()
     st.subheader("📦 재고")
@@ -1486,27 +1791,62 @@ with tab_스펙:
     )
 
     st.divider()
+    with st.container(border=True):
+        st.markdown("#### 💸 온라인 판매 가격 (현재 판매가)")
+        st.caption("00~05 단계가 가격 언급 시 우선 참조하는 필드입니다.")
+        온라인판매가격 = st.number_input(
+            "온라인 판매 가격",
+            min_value=0,
+            value=int(row.get("온라인판매가격") or 0),
+            step=100,
+            label_visibility="collapsed",
+            key="num_online_price",
+        )
+
     st.subheader("💰 가격")
     p1, p2, p3, p4 = st.columns(4)
-    소매가     = p1.number_input("소매가",     min_value=0, value=int(row.get("소매가")     or 0), step=100)
-    도매가     = p2.number_input("도매가",     min_value=0, value=int(row.get("도매가")     or 0), step=100)
-    실제가     = p3.number_input("실제가",     min_value=0, value=int(row.get("실제가")     or 0), step=100)
-    평균도매가 = p4.number_input("평균도매가", min_value=0, value=int(row.get("평균도매가") or 0), step=100)
+    소매가         = p1.number_input("소매가",         min_value=0, value=int(row.get("소매가")       or 0), step=100)
+    도매가         = p2.number_input("도매가",         min_value=0, value=int(row.get("도매가")       or 0), step=100)
+    실제받는가격   = p3.number_input("실제 받는 가격", min_value=0, value=int(row.get("실제받는가격") or 0), step=100)
+    평균입고가     = p4.number_input("평균 입고가",    min_value=0, value=int(row.get("평균입고가")   or 0), step=100)
 
     st.divider()
     st.subheader("📐 치수 / 무게")
+    st.markdown("**제품 본체**")
     d1, d2, d3, d4 = st.columns(4)
     가로 = d1.number_input("가로 (cm)", min_value=0.0, value=float(row.get("가로_cm") or 0), format="%.1f")
     세로 = d2.number_input("세로 (cm)", min_value=0.0, value=float(row.get("세로_cm") or 0), format="%.1f")
     높이 = d3.number_input("높이 (cm)", min_value=0.0, value=float(row.get("높이_cm") or 0), format="%.1f")
     무게 = d4.number_input("무게 (g)",  min_value=0.0, value=float(row.get("무게_g")  or 0), format="%.0f")
+    st.markdown("**패키지(박스)**")
+    b1, b2, b3, b4 = st.columns(4)
+    박스_가로 = b1.number_input("박스 가로 (cm)", min_value=0.0,
+                                value=float(row.get("박스_가로_cm") or 0), format="%.1f",
+                                key="num_box_w")
+    박스_세로 = b2.number_input("박스 세로 (cm)", min_value=0.0,
+                                value=float(row.get("박스_세로_cm") or 0), format="%.1f",
+                                key="num_box_d")
+    박스_높이 = b3.number_input("박스 높이 (cm)", min_value=0.0,
+                                value=float(row.get("박스_높이_cm") or 0), format="%.1f",
+                                key="num_box_h")
+    박스_무게 = b4.number_input("박스 무게 (g)",  min_value=0.0,
+                                value=float(row.get("박스_무게_g")  or 0), format="%.0f",
+                                key="num_box_wt")
 
     st.divider()
     st.subheader("🎨 소재 / 색상")
+    st.markdown("**제품 본체**")
     m1, m2, m3 = st.columns(3)
     재질   = m1.text_input("재질",   value=row.get("재질") or "")
     색상   = m2.text_input("색상",   value=row.get("색상") or "")
     구성품 = m3.text_input("구성품", value=row.get("구성품") or "")
+    st.markdown("**패키지(박스)**")
+    bm1, bm2 = st.columns(2)
+    박스_재질 = bm1.text_input("박스 재질", value=row.get("박스_재질") or "",
+                              placeholder="예: 종이박스, PE백, 블리스터팩",
+                              key="txt_box_material")
+    박스_색상 = bm2.text_input("박스 색상", value=row.get("박스_색상") or "",
+                              key="txt_box_color")
 
     st.divider()
     st.subheader("✅ 인증")
@@ -1525,14 +1865,59 @@ with tab_스펙:
     검수메모 = ins2.text_input("검수 메모", value=row.get("검수메모") or "")
 
     st.divider()
-    st.subheader("📝 판매자 메모")
-    특징   = st.text_area("메모",        value=row.get("특징")   or "", height=80)
-    키워드 = st.text_area("연관 키워드", value=row.get("키워드") or "", height=68)
+    st.subheader("🏷️ 기타 제품 특징")
+    st.caption("한 줄에 하나씩. **01~05 단계가 참고합니다.** 시각설명 자동 추출 시 함께 채워집니다.")
+
+    _bullets_initial = row.get("제품특징_bullet") or []
+    if isinstance(_bullets_initial, str):
+        try:
+            _bullets_initial = json.loads(_bullets_initial)
+        except Exception:
+            _bullets_initial = []
+    if not isinstance(_bullets_initial, list):
+        _bullets_initial = []
+
+    _bullets_text_default = "\n".join(str(b) for b in _bullets_initial)
+    bullets_text = st.text_area(
+        "제품 특징 (bullet)",
+        value=_bullets_text_default,
+        height=140,
+        placeholder="예:\n실리콘 흡착판으로 평면 부착\n충전 1회로 5시간 작동\n방수 등급 IPX5",
+        key="ta_제품특징_bullet",
+    )
+    제품특징_bullet = [line.strip() for line in bullets_text.split("\n") if line.strip()]
+
+    st.text_area(
+        "제품 특징 추가",
+        value=row.get("제품특징_추가") or "",
+        height=80,
+        placeholder="비전패스가 못 잡거나 제조사 정보 외에 판매에 도움될 내용 (bullet 보충용, 01~05 참조)",
+        key="ta_제품특징_추가",
+    )
+
+    st.divider()
+    st.subheader("🏪 판매자 특성 적용")
+    _판매자특성_전체 = load_판매자특성()
+    if _판매자특성_전체:
+        st.caption("⚙️ 설정 페이지에서 정의한 판매자 특성 중 **이 제품에 해당하는 항목**을 선택하세요. 01~05 단계가 참고합니다.")
+        _선택_현재 = row.get("판매자특성_선택") or []
+        if isinstance(_선택_현재, str):
+            try:
+                _선택_현재 = json.loads(_선택_현재)
+            except Exception:
+                _선택_현재 = []
+        _선택_현재_set = set(_선택_현재)
+        _판매자특성_체크 = []
+        for _특성 in _판매자특성_전체:
+            if st.checkbox(_특성, value=(_특성 in _선택_현재_set), key=f"chk_특성_{_특성}"):
+                _판매자특성_체크.append(_특성)
+    else:
+        st.caption("⚙️ [설정 페이지](0_settings)에서 판매자 특성을 먼저 등록하세요.")
+        _판매자특성_체크 = []
 
     st.divider()
     _t2_l, _t2_r = st.columns([4, 1])
     if _t2_l.button("💾 저장", type="primary", use_container_width=True, key="btn_save_tab2"):
-        # tab_판매자 위젯은 아직 실행 전 → session_state 키로 읽고, 없으면 DB값 폴백
         _ss = st.session_state
         _save({
             "제품명":         제품명.strip(),
@@ -1541,24 +1926,34 @@ with tab_스펙:
             "서브카테고리":   서브카테고리  or None,
             "원산지":         원산지        or None,
             "제조사":         제조사        or None,
+            "수입자":         수입자        or None,
+            "사용연령":       사용연령      or None,
             "가로_cm":        가로          or None,
             "세로_cm":        세로          or None,
             "높이_cm":        높이          or None,
             "무게_g":         무게          or None,
+            "박스_가로_cm":   박스_가로     or None,
+            "박스_세로_cm":   박스_세로     or None,
+            "박스_높이_cm":   박스_높이     or None,
+            "박스_무게_g":    박스_무게     or None,
             "재질":           재질          or None,
             "색상":           색상          or None,
             "구성품":         구성품        or None,
+            "박스_재질":      박스_재질     or None,
+            "박스_색상":      박스_색상     or None,
             "kc인증":         kc인증,
             "kc인증번호":     kc인증번호    or None,
             "전파인증":       전파인증,
             "전파인증번호":   전파인증번호  or None,
             "기타인증":       기타인증      or None,
-            "소매가":         소매가        or None,
-            "도매가":         도매가        or None,
-            "실제가":         실제가        or None,
-            "평균도매가":     평균도매가    or None,
-            "특징":           특징          or None,
-            "키워드":         키워드        or None,
+            "소매가":         소매가         or None,
+            "도매가":         도매가         or None,
+            "실제받는가격":   실제받는가격   or None,
+            "평균입고가":     평균입고가     or None,
+            "온라인판매가격": 온라인판매가격 or None,
+            "제품특징_bullet":  제품특징_bullet,
+            "제품특징_추가":    _ss.get("ta_제품특징_추가", row.get("제품특징_추가")) or None,
+            "판매자특성_선택":  _판매자특성_체크,
             "검수완료":       검수필요,
             "검수메모":       검수메모      or None,
             "실시간재고":     실시간재고,
@@ -1592,9 +1987,18 @@ with tab_스펙:
 # 탭 — 판매자 정보
 # ─────────────────────────────────────────────────────────
 with tab_판매자:
-    판매자메모 = st.text_area("판매자 특이사항", value=row.get("판매자메모") or "", height=120,
-                               key="sf_판매자메모")
+    st.subheader("🗒️ 판매자 개인 메모")
+    판매자메모 = st.text_area(
+        "판매자 개인 메모",
+        value=row.get("판매자메모") or "",
+        height=120,
+        placeholder="판매자만 참고하는 메모 (시스템 미참조)",
+        key="sf_판매자메모",
+        label_visibility="collapsed",
+    )
+    st.caption("판매자만 참고 — 시스템(01~05) 미참조.")
 
+    st.divider()
     st.subheader("판매 조건")
     판매채널   = st.text_input("판매 채널 제한", value=row.get("판매채널") or "",
                                 placeholder="예: 쿠팡, 스마트스토어", key="sf_판매채널")
@@ -1613,24 +2017,34 @@ with tab_판매자:
             "서브카테고리":   서브카테고리  or None,
             "원산지":         원산지        or None,
             "제조사":         제조사        or None,
+            "수입자":         수입자        or None,
+            "사용연령":       사용연령      or None,
             "가로_cm":        가로          or None,
             "세로_cm":        세로          or None,
             "높이_cm":        높이          or None,
             "무게_g":         무게          or None,
+            "박스_가로_cm":   박스_가로     or None,
+            "박스_세로_cm":   박스_세로     or None,
+            "박스_높이_cm":   박스_높이     or None,
+            "박스_무게_g":    박스_무게     or None,
             "재질":           재질          or None,
             "색상":           색상          or None,
             "구성품":         구성품        or None,
+            "박스_재질":      박스_재질     or None,
+            "박스_색상":      박스_색상     or None,
             "kc인증":         kc인증,
             "kc인증번호":     kc인증번호    or None,
             "전파인증":       전파인증,
             "전파인증번호":   전파인증번호  or None,
             "기타인증":       기타인증      or None,
-            "소매가":         소매가        or None,
-            "도매가":         도매가        or None,
-            "실제가":         실제가        or None,
-            "평균도매가":     평균도매가    or None,
-            "특징":           특징          or None,
-            "키워드":         키워드        or None,
+            "소매가":         소매가         or None,
+            "도매가":         도매가         or None,
+            "실제받는가격":   실제받는가격   or None,
+            "평균입고가":     평균입고가     or None,
+            "온라인판매가격": 온라인판매가격 or None,
+            "제품특징_bullet":  제품특징_bullet,
+            "제품특징_추가":    st.session_state.get("ta_제품특징_추가", row.get("제품특징_추가")) or None,
+            "판매자특성_선택":  _판매자특성_체크,
             "판매자메모":     판매자메모    or None,
             "검수완료":       검수필요,
             "검수메모":       검수메모      or None,

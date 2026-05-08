@@ -1,8 +1,67 @@
 {
-  "claude_model_00": "claude-sonnet-4-6",
-  "claude_model_01": "claude-sonnet-4-6",
-  "claude_model_02": "claude-sonnet-4-6",
-  "gemini_model_00": "gemini-2.5-flash",
-  "gemini_model_01": "gemini-2.5-pro",
-  "gemini_model_02": "gemini-2.5-pro"
+  "primary_model_00": "claude-sonnet-4-6",
+  "compare_model_00": "gemini-2.5-flash",
+  "compare_enabled_00": false,
+  "primary_model_01": "claude-sonnet-4-6",
+  "compare_model_01": "gemini-2.5-pro",
+  "compare_enabled_01": false,
+  "primary_model_02": "claude-sonnet-4-6",
+  "compare_model_02": "gemini-2.5-pro",
+  "compare_enabled_02": false,
+  "primary_model_03": "claude-sonnet-4-6",
+  "compare_model_03": "gemini-2.5-flash",
+  "compare_enabled_03": false,
+  "primary_model_04": "claude-sonnet-4-6",
+  "compare_model_04": "gemini-2.5-flash",
+  "compare_enabled_04": false,
+  "primary_model_05": "claude-sonnet-4-6",
+  "compare_model_05": "gemini-2.5-flash",
+  "compare_enabled_05": false,
+  "excluded_fields_00": [
+    "재고",
+    "판매자메모",
+    "검수완료",
+    "검수메모",
+    "엠군상태"
+  ],
+  "excluded_fields_01": [
+    "재고",
+    "판매자메모",
+    "검수완료",
+    "검수메모",
+    "엠군상태"
+  ],
+  "excluded_fields_02": [
+    "재고",
+    "판매자메모",
+    "검수완료",
+    "검수메모",
+    "엠군상태"
+  ],
+  "excluded_fields_03": [
+    "재고",
+    "판매자메모",
+    "검수완료",
+    "검수메모",
+    "엠군상태"
+  ],
+  "excluded_fields_04": [
+    "재고",
+    "판매자메모",
+    "검수완료",
+    "검수메모",
+    "엠군상태"
+  ],
+  "excluded_fields_05": [
+    "재고",
+    "판매자메모",
+    "검수완료",
+    "검수메모",
+    "엠군상태"
+  ],
+  "판매자특성": [
+    "완전포장제품 - 육안으로 외형검수(파손/불량 등) 후 발송",
+    "개봉가능포장제품 - 개봉 후 직접 검수(테스트) 후 발송",
+    "친환경 포장 (주변 상권 연계 A급 박스 재활용)"
+  ]
 }

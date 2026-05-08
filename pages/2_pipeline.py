@@ -24,7 +24,12 @@ from pipeline.loader import (
     build_user_input_05,
     load_agent_prompt,
 )
-from pipeline.settings import load as load_settings
+from pipeline.settings import (
+    caption_for_stage,
+    load as load_settings,
+    model_for_family,
+    models_for_stage,
+)
 from pipeline.storage import get_storage
 
 
@@ -140,6 +145,29 @@ def _lint_reviewer_label(builder: str) -> str:
     return "Claude" if builder == "gemini" else "Gemini"
 
 
+def _result_layout(claude_model: str | None, gemini_model: str | None):
+    """결과 표시 컨테이너 (claude_container, gemini_container) 반환.
+
+    - 두 모델 모두 있으면 2-컬럼.
+    - 한쪽만 있으면 단일 컨테이너(전체 너비) + 비활성 쪽 None.
+    - 둘 다 None이면 (None, None).
+    """
+    if claude_model and gemini_model:
+        c1, c2 = st.columns(2)
+        return c1, c2
+    if claude_model:
+        return st.container(), None
+    if gemini_model:
+        return None, st.container()
+    return None, None
+
+
+def _compare_off_caption(claude_model: str | None, gemini_model: str | None) -> None:
+    """비교 모델 off일 때 단일 family 안내문."""
+    if not (claude_model and gemini_model):
+        st.caption("ℹ️ 비교 모델 off — 주 사용 모델 결과만 표시합니다.")
+
+
 def _section_edit_ui(
     builder: str,
     model_label: str,
@@ -197,6 +225,10 @@ st.caption("🗄️ DB — 상품 (읽기) | 엠군_실행, 엠군_타겟, 엠�
 
 ss = st.session_state
 cfg = load_settings()
+claude_model_01, gemini_model_01 = models_for_stage("01", cfg)
+claude_model_02, gemini_model_02 = models_for_stage("02", cfg)
+claude_model_04, gemini_model_04 = models_for_stage("04", cfg)
+claude_model_05, gemini_model_05 = models_for_stage("05", cfg)
 storage = get_storage()
 
 
@@ -293,6 +325,7 @@ with st.container(border=True):
     _가격 = (spec.get("가격") or {})
     st.caption(
         f"채널: {_채널}  ·  재고: {_재고}  ·  "
+        f"💸 온라인 판매 가격: **{_가격.get('온라인판매가격')}**  ·  "
         f"소매가: {_가격.get('소매가')}  ·  도매가: {_가격.get('도매가')}"
     )
     if ss.get("current_run_id"):
@@ -313,10 +346,7 @@ with col_run:
         use_container_width=True,
     )
 with col_info:
-    st.caption(
-        f"Claude: `{cfg['claude_model_01']}` · Gemini: `{cfg['gemini_model_01']}`  "
-        "([⚙️ 설정](0_settings)에서 변경)"
-    )
+    st.caption(caption_for_stage("01", cfg))
 
 if run_01:
     try:
@@ -329,8 +359,8 @@ if run_01:
     with st.spinner("Claude + Gemini 호출 중…"):
         targets_01 = generate_both(
             system_prompt, user_input,
-            claude_model=cfg["claude_model_01"],
-            gemini_model=cfg["gemini_model_01"],
+            claude_model=claude_model_01,
+            gemini_model=gemini_model_01,
         )
     ss["targets_01"] = targets_01
 
@@ -339,8 +369,8 @@ if run_01:
             "deficit_target",
             targets_01.get("claude", ""),
             targets_01.get("gemini", ""),
-            claude_model=cfg["claude_model_01"],
-            gemini_model=cfg["gemini_model_01"],
+            claude_model=claude_model_01,
+            gemini_model=gemini_model_01,
         )
 
     # 즉시 DB 저장: 새 실행 + 모든 타겟 후보 (모델별)
@@ -410,43 +440,55 @@ if targets_01:
     lint_text_g = lint_01.get("gemini") or ""
     lint_c = parse_lint_status(lint_text_c) if lint_text_c else None
     lint_g = parse_lint_status(lint_text_g) if lint_text_g else None
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown(_model_header("🟠 Claude", cfg["claude_model_01"], lint_c))
-        st.markdown(md_c or "_(empty)_")
-        if lint_text_c:
-            with st.expander(
-                f"🔍 {_lint_reviewer_label('claude')} 린터 검수",
-                expanded=lint_c[0] in ("FAIL", "WARN") if lint_c else False,
-            ):
-                st.markdown(lint_text_c)
-        if json_c:
-            with st.expander("🔧 JSON 블록 (디버그)", expanded=False):
-                st.code(json_c, language="json")
-    with c2:
-        st.markdown(_model_header("🔵 Gemini", cfg["gemini_model_01"], lint_g))
-        st.markdown(md_g or "_(empty)_")
-        if lint_text_g:
-            with st.expander(
-                f"🔍 {_lint_reviewer_label('gemini')} 린터 검수",
-                expanded=lint_g[0] in ("FAIL", "WARN") if lint_g else False,
-            ):
-                st.markdown(lint_text_g)
-        if json_g:
-            with st.expander("🔧 JSON 블록 (디버그)", expanded=False):
-                st.code(json_g, language="json")
+    _compare_off_caption(claude_model_01, gemini_model_01)
+    cc, gc = _result_layout(claude_model_01, gemini_model_01)
+    if cc is not None:
+        with cc:
+            st.markdown(_model_header("🟠 Claude", claude_model_01, lint_c))
+            st.markdown(md_c or "_(empty)_")
+            if lint_text_c:
+                with st.expander(
+                    f"🔍 {_lint_reviewer_label('claude')} 린터 검수",
+                    expanded=lint_c[0] in ("FAIL", "WARN") if lint_c else False,
+                ):
+                    st.markdown(lint_text_c)
+            if json_c:
+                with st.expander("🔧 JSON 블록 (디버그)", expanded=False):
+                    st.code(json_c, language="json")
+    if gc is not None:
+        with gc:
+            st.markdown(_model_header("🔵 Gemini", gemini_model_01, lint_g))
+            st.markdown(md_g or "_(empty)_")
+            if lint_text_g:
+                with st.expander(
+                    f"🔍 {_lint_reviewer_label('gemini')} 린터 검수",
+                    expanded=lint_g[0] in ("FAIL", "WARN") if lint_g else False,
+                ):
+                    st.markdown(lint_text_g)
+            if json_g:
+                with st.expander("🔧 JSON 블록 (디버그)", expanded=False):
+                    st.code(json_g, language="json")
 
 # ── Step C: 타겟 선택 + Step D: 02 실행 ─────────────────
 if targets_01:
     st.divider()
     st.header("Step 2 · 타겟 확정 + 02 포지셔닝")
 
-    basis = st.radio(
-        "02의 기준이 될 01 결과",
-        options=["claude", "gemini"],
-        horizontal=True,
-        format_func=lambda x: {"claude": "🟠 Claude", "gemini": "🔵 Gemini"}[x],
-    )
+    available_bases_01 = [
+        m for m in ("claude", "gemini")
+        if (targets_01.get(m) or "").strip()
+    ]
+    if len(available_bases_01) >= 2:
+        basis = st.radio(
+            "02의 기준이 될 01 결과",
+            options=available_bases_01,
+            horizontal=True,
+            format_func=lambda x: {"claude": "🟠 Claude", "gemini": "🔵 Gemini"}[x],
+        )
+    elif available_bases_01:
+        basis = available_bases_01[0]
+    else:
+        basis = "claude"
 
     parsed_with_ids = ss.get("parsed_with_ids") or {}
     targets_list: list[dict] = parsed_with_ids.get(basis) or []
@@ -543,10 +585,7 @@ if targets_01:
                 placeholder="직업+나이+상황 / 핵심 결핍 / 결핍 원천 / 구매편익 / 관여도 / 채널 / 비고 / 욕구깡패 3차…",
             )
 
-    st.caption(
-        f"Claude: `{cfg['claude_model_02']}` · Gemini: `{cfg['gemini_model_02']}`  "
-        "([⚙️ 설정](0_settings)에서 변경)"
-    )
+    st.caption(caption_for_stage("02", cfg))
     run_02 = st.button(
         "🚀 02 실행 (Claude + Gemini)",
         type="primary",
@@ -570,8 +609,8 @@ if targets_01:
         with st.spinner("Claude + Gemini 호출 중…"):
             positioning_02 = generate_both(
                 system_prompt, user_input,
-                claude_model=cfg["claude_model_02"],
-                gemini_model=cfg["gemini_model_02"],
+                claude_model=claude_model_02,
+                gemini_model=gemini_model_02,
             )
         ss["positioning_02"] = positioning_02
         # 02 갱신: 이전 04/05는 보존하되 버전 카운터로 stale 표시.
@@ -583,8 +622,8 @@ if targets_01:
                 "positioning",
                 positioning_02.get("claude", ""),
                 positioning_02.get("gemini", ""),
-                claude_model=cfg["claude_model_02"],
-                gemini_model=cfg["gemini_model_02"],
+                claude_model=claude_model_02,
+                gemini_model=gemini_model_02,
             )
 
         try:
@@ -652,7 +691,7 @@ if positioning_02:
                         section_header=sec_payload["section_header"],
                         user_feedback=sec_payload["feedback"],
                         builder_model=sec_payload["builder"],
-                        model_id=cfg[f"{sec_payload['builder']}_model_02"],
+                        model_id=model_for_family(sec_payload["builder"], "02", cfg),
                     )
                     merged = replace_section(
                         full_old,
@@ -689,35 +728,38 @@ if positioning_02:
     lint_text_g2 = lint_02.get("gemini") or ""
     lint_c2 = parse_lint_status(lint_text_c2) if lint_text_c2 else None
     lint_g2 = parse_lint_status(lint_text_g2) if lint_text_g2 else None
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown(_model_header("🟠 Claude", cfg["claude_model_02"], lint_c2))
-        st.markdown(positioning_02.get("claude") or "_(empty)_")
-        if lint_text_c2:
-            with st.expander(
-                f"🔍 {_lint_reviewer_label('claude')} 린터 검수",
-                expanded=lint_c2[0] in ("FAIL", "WARN") if lint_c2 else False,
-            ):
-                st.markdown(lint_text_c2)
-        _section_edit_ui(
-            "claude", "Claude",
-            positioning_02.get("claude") or "",
-            "_sec_regen_02",
-        )
-    with c2:
-        st.markdown(_model_header("🔵 Gemini", cfg["gemini_model_02"], lint_g2))
-        st.markdown(positioning_02.get("gemini") or "_(empty)_")
-        if lint_text_g2:
-            with st.expander(
-                f"🔍 {_lint_reviewer_label('gemini')} 린터 검수",
-                expanded=lint_g2[0] in ("FAIL", "WARN") if lint_g2 else False,
-            ):
-                st.markdown(lint_text_g2)
-        _section_edit_ui(
-            "gemini", "Gemini",
-            positioning_02.get("gemini") or "",
-            "_sec_regen_02",
-        )
+    _compare_off_caption(claude_model_02, gemini_model_02)
+    cc2, gc2 = _result_layout(claude_model_02, gemini_model_02)
+    if cc2 is not None:
+        with cc2:
+            st.markdown(_model_header("🟠 Claude", claude_model_02, lint_c2))
+            st.markdown(positioning_02.get("claude") or "_(empty)_")
+            if lint_text_c2:
+                with st.expander(
+                    f"🔍 {_lint_reviewer_label('claude')} 린터 검수",
+                    expanded=lint_c2[0] in ("FAIL", "WARN") if lint_c2 else False,
+                ):
+                    st.markdown(lint_text_c2)
+            _section_edit_ui(
+                "claude", "Claude",
+                positioning_02.get("claude") or "",
+                "_sec_regen_02",
+            )
+    if gc2 is not None:
+        with gc2:
+            st.markdown(_model_header("🔵 Gemini", gemini_model_02, lint_g2))
+            st.markdown(positioning_02.get("gemini") or "_(empty)_")
+            if lint_text_g2:
+                with st.expander(
+                    f"🔍 {_lint_reviewer_label('gemini')} 린터 검수",
+                    expanded=lint_g2[0] in ("FAIL", "WARN") if lint_g2 else False,
+                ):
+                    st.markdown(lint_text_g2)
+            _section_edit_ui(
+                "gemini", "Gemini",
+                positioning_02.get("gemini") or "",
+                "_sec_regen_02",
+            )
 
     if ss.get("saved_run_id"):
         st.info(
@@ -729,18 +771,24 @@ if positioning_02 and ss.get("selected_target_db_id"):
     st.divider()
     st.header("Step 3 · 04 상세페이지")
 
-    detail_basis = st.radio(
-        "04 입력으로 쓸 02 결과",
-        options=["claude", "gemini"],
-        horizontal=True,
-        format_func=lambda x: {"claude": "🟠 Claude", "gemini": "🔵 Gemini"}[x],
-        key="basis_04",
-    )
+    available_bases_02 = [
+        m for m in ("claude", "gemini")
+        if (positioning_02.get(m) or "").strip()
+    ]
+    if len(available_bases_02) >= 2:
+        detail_basis = st.radio(
+            "04 입력으로 쓸 02 결과",
+            options=available_bases_02,
+            horizontal=True,
+            format_func=lambda x: {"claude": "🟠 Claude", "gemini": "🔵 Gemini"}[x],
+            key="basis_04",
+        )
+    elif available_bases_02:
+        detail_basis = available_bases_02[0]
+    else:
+        detail_basis = "claude"
 
-    st.caption(
-        f"Claude: `{cfg['claude_model_02']}` · Gemini: `{cfg['gemini_model_02']}`  "
-        "(02 모델 재사용 — [⚙️ 설정](0_settings)에서 변경)"
-    )
+    st.caption(caption_for_stage("04", cfg))
     pos_text_for_04 = positioning_02.get(detail_basis) or ""
     run_04 = st.button(
         "🚀 04 실행 (Claude + Gemini)",
@@ -775,8 +823,8 @@ if positioning_02 and ss.get("selected_target_db_id"):
         with st.spinner("Claude + Gemini 호출 중…"):
             detail_04 = generate_both(
                 system_prompt, user_input,
-                claude_model=cfg["claude_model_02"],
-                gemini_model=cfg["gemini_model_02"],
+                claude_model=claude_model_04,
+                gemini_model=gemini_model_04,
             )
         ss["detail_04"] = detail_04
         ss["detail_04_based_on_ver"] = ss.get("positioning_02_ver", 0)
@@ -786,8 +834,8 @@ if positioning_02 and ss.get("selected_target_db_id"):
                 "detail_page",
                 detail_04.get("claude", ""),
                 detail_04.get("gemini", ""),
-                claude_model=cfg["claude_model_02"],
-                gemini_model=cfg["gemini_model_02"],
+                claude_model=claude_model_04,
+                gemini_model=gemini_model_04,
             )
 
         try:
@@ -831,7 +879,7 @@ if detail_04:
                         section_header=sec_payload_04["section_header"],
                         user_feedback=sec_payload_04["feedback"],
                         builder_model=sec_payload_04["builder"],
-                        model_id=cfg[f"{sec_payload_04['builder']}_model_02"],
+                        model_id=model_for_family(sec_payload_04["builder"], "04", cfg),
                     )
                     merged = replace_section(
                         full_old,
@@ -878,55 +926,64 @@ if detail_04:
     lint_text_g4 = lint_04.get("gemini") or ""
     lint_c4 = parse_lint_status(lint_text_c4) if lint_text_c4 else None
     lint_g4 = parse_lint_status(lint_text_g4) if lint_text_g4 else None
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown(_model_header("🟠 Claude", cfg["claude_model_02"], lint_c4))
-        st.markdown(detail_04.get("claude") or "_(empty)_")
-        if lint_text_c4:
-            with st.expander(
-                f"🔍 {_lint_reviewer_label('claude')} 린터 검수",
-                expanded=lint_c4[0] in ("FAIL", "WARN") if lint_c4 else False,
-            ):
-                st.markdown(lint_text_c4)
-        _section_edit_ui(
-            "claude", "Claude",
-            detail_04.get("claude") or "",
-            "_sec_regen_04",
-            marker_style="bracket",
-        )
-    with c2:
-        st.markdown(_model_header("🔵 Gemini", cfg["gemini_model_02"], lint_g4))
-        st.markdown(detail_04.get("gemini") or "_(empty)_")
-        if lint_text_g4:
-            with st.expander(
-                f"🔍 {_lint_reviewer_label('gemini')} 린터 검수",
-                expanded=lint_g4[0] in ("FAIL", "WARN") if lint_g4 else False,
-            ):
-                st.markdown(lint_text_g4)
-        _section_edit_ui(
-            "gemini", "Gemini",
-            detail_04.get("gemini") or "",
-            "_sec_regen_04",
-            marker_style="bracket",
-        )
+    _compare_off_caption(claude_model_04, gemini_model_04)
+    cc4, gc4 = _result_layout(claude_model_04, gemini_model_04)
+    if cc4 is not None:
+        with cc4:
+            st.markdown(_model_header("🟠 Claude", claude_model_04, lint_c4))
+            st.markdown(detail_04.get("claude") or "_(empty)_")
+            if lint_text_c4:
+                with st.expander(
+                    f"🔍 {_lint_reviewer_label('claude')} 린터 검수",
+                    expanded=lint_c4[0] in ("FAIL", "WARN") if lint_c4 else False,
+                ):
+                    st.markdown(lint_text_c4)
+            _section_edit_ui(
+                "claude", "Claude",
+                detail_04.get("claude") or "",
+                "_sec_regen_04",
+                marker_style="bracket",
+            )
+    if gc4 is not None:
+        with gc4:
+            st.markdown(_model_header("🔵 Gemini", gemini_model_04, lint_g4))
+            st.markdown(detail_04.get("gemini") or "_(empty)_")
+            if lint_text_g4:
+                with st.expander(
+                    f"🔍 {_lint_reviewer_label('gemini')} 린터 검수",
+                    expanded=lint_g4[0] in ("FAIL", "WARN") if lint_g4 else False,
+                ):
+                    st.markdown(lint_text_g4)
+            _section_edit_ui(
+                "gemini", "Gemini",
+                detail_04.get("gemini") or "",
+                "_sec_regen_04",
+                marker_style="bracket",
+            )
 
 # ── Step 4: 05 채널·물길 ────────────────────────────────────
 if positioning_02 and ss.get("selected_target_db_id"):
     st.divider()
     st.header("Step 4 · 05 채널·물길")
 
-    channel_basis = st.radio(
-        "05 입력으로 쓸 02 결과",
-        options=["claude", "gemini"],
-        horizontal=True,
-        format_func=lambda x: {"claude": "🟠 Claude", "gemini": "🔵 Gemini"}[x],
-        key="basis_05",
-    )
+    available_bases_02_for_05 = [
+        m for m in ("claude", "gemini")
+        if (positioning_02.get(m) or "").strip()
+    ]
+    if len(available_bases_02_for_05) >= 2:
+        channel_basis = st.radio(
+            "05 입력으로 쓸 02 결과",
+            options=available_bases_02_for_05,
+            horizontal=True,
+            format_func=lambda x: {"claude": "🟠 Claude", "gemini": "🔵 Gemini"}[x],
+            key="basis_05",
+        )
+    elif available_bases_02_for_05:
+        channel_basis = available_bases_02_for_05[0]
+    else:
+        channel_basis = "claude"
 
-    st.caption(
-        f"Claude: `{cfg['claude_model_02']}` · Gemini: `{cfg['gemini_model_02']}`  "
-        "(02 모델 재사용 — [⚙️ 설정](0_settings)에서 변경)"
-    )
+    st.caption(caption_for_stage("05", cfg))
     pos_text_for_05 = positioning_02.get(channel_basis) or ""
     run_05 = st.button(
         "🚀 05 실행 (Claude + Gemini)",
@@ -960,8 +1017,8 @@ if positioning_02 and ss.get("selected_target_db_id"):
         with st.spinner("Claude + Gemini 호출 중…"):
             channel_05 = generate_both(
                 system_prompt, user_input,
-                claude_model=cfg["claude_model_02"],
-                gemini_model=cfg["gemini_model_02"],
+                claude_model=claude_model_05,
+                gemini_model=gemini_model_05,
             )
         ss["channel_05"] = channel_05
         ss["channel_05_based_on_ver"] = ss.get("positioning_02_ver", 0)
@@ -971,8 +1028,8 @@ if positioning_02 and ss.get("selected_target_db_id"):
                 "channel",
                 channel_05.get("claude", ""),
                 channel_05.get("gemini", ""),
-                claude_model=cfg["claude_model_02"],
-                gemini_model=cfg["gemini_model_02"],
+                claude_model=claude_model_05,
+                gemini_model=gemini_model_05,
             )
 
         try:
@@ -1016,7 +1073,7 @@ if channel_05:
                         section_header=sec_payload_05["section_header"],
                         user_feedback=sec_payload_05["feedback"],
                         builder_model=sec_payload_05["builder"],
-                        model_id=cfg[f"{sec_payload_05['builder']}_model_02"],
+                        model_id=model_for_family(sec_payload_05["builder"], "05", cfg),
                     )
                     merged = replace_section(
                         full_old,
@@ -1063,34 +1120,37 @@ if channel_05:
     lint_text_g5 = lint_05.get("gemini") or ""
     lint_c5 = parse_lint_status(lint_text_c5) if lint_text_c5 else None
     lint_g5 = parse_lint_status(lint_text_g5) if lint_text_g5 else None
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown(_model_header("🟠 Claude", cfg["claude_model_02"], lint_c5))
-        st.markdown(channel_05.get("claude") or "_(empty)_")
-        if lint_text_c5:
-            with st.expander(
-                f"🔍 {_lint_reviewer_label('claude')} 린터 검수",
-                expanded=lint_c5[0] in ("FAIL", "WARN") if lint_c5 else False,
-            ):
-                st.markdown(lint_text_c5)
-        _section_edit_ui(
-            "claude", "Claude",
-            channel_05.get("claude") or "",
-            "_sec_regen_05",
-            marker_style="bracket",
-        )
-    with c2:
-        st.markdown(_model_header("🔵 Gemini", cfg["gemini_model_02"], lint_g5))
-        st.markdown(channel_05.get("gemini") or "_(empty)_")
-        if lint_text_g5:
-            with st.expander(
-                f"🔍 {_lint_reviewer_label('gemini')} 린터 검수",
-                expanded=lint_g5[0] in ("FAIL", "WARN") if lint_g5 else False,
-            ):
-                st.markdown(lint_text_g5)
-        _section_edit_ui(
-            "gemini", "Gemini",
-            channel_05.get("gemini") or "",
-            "_sec_regen_05",
-            marker_style="bracket",
-        )
+    _compare_off_caption(claude_model_05, gemini_model_05)
+    cc5, gc5 = _result_layout(claude_model_05, gemini_model_05)
+    if cc5 is not None:
+        with cc5:
+            st.markdown(_model_header("🟠 Claude", claude_model_05, lint_c5))
+            st.markdown(channel_05.get("claude") or "_(empty)_")
+            if lint_text_c5:
+                with st.expander(
+                    f"🔍 {_lint_reviewer_label('claude')} 린터 검수",
+                    expanded=lint_c5[0] in ("FAIL", "WARN") if lint_c5 else False,
+                ):
+                    st.markdown(lint_text_c5)
+            _section_edit_ui(
+                "claude", "Claude",
+                channel_05.get("claude") or "",
+                "_sec_regen_05",
+                marker_style="bracket",
+            )
+    if gc5 is not None:
+        with gc5:
+            st.markdown(_model_header("🔵 Gemini", gemini_model_05, lint_g5))
+            st.markdown(channel_05.get("gemini") or "_(empty)_")
+            if lint_text_g5:
+                with st.expander(
+                    f"🔍 {_lint_reviewer_label('gemini')} 린터 검수",
+                    expanded=lint_g5[0] in ("FAIL", "WARN") if lint_g5 else False,
+                ):
+                    st.markdown(lint_text_g5)
+            _section_edit_ui(
+                "gemini", "Gemini",
+                channel_05.get("gemini") or "",
+                "_sec_regen_05",
+                marker_style="bracket",
+            )

@@ -17,7 +17,11 @@ import streamlit as st
 
 from pipeline.llm import generate_both
 from pipeline.loader import build_user_input_03, load_agent_prompt
-from pipeline.settings import load as load_settings
+from pipeline.settings import (
+    caption_for_stage,
+    load as load_settings,
+    models_for_stage,
+)
 from pipeline.storage import get_storage
 
 
@@ -69,6 +73,7 @@ st.title("🔤 03 네이밍")
 st.caption("🗄️ DB — 엠군_실행/타겟/포지셔닝/상세페이지/채널 (읽기) | 엠군_네이밍 (저장)")
 
 cfg = load_settings()
+claude_model_03, gemini_model_03 = models_for_stage("03", cfg)
 storage = get_storage()
 ss = st.session_state
 
@@ -162,40 +167,41 @@ naming_type = st.radio(
 # ── Step 4-B: basis 선택 (02 / 04 / 05) ───────────────────
 st.markdown("**입력 컨텍스트 선택** — 각 단계의 어떤 모델 결과를 03 네이밍 입력으로 쓸지")
 
+_label_fmt = lambda x: {"claude": "🟠 Claude", "gemini": "🔵 Gemini", "(생략)": "— 생략"}[x]
+
 c1, c2, c3 = st.columns(3)
 with c1:
-    pos_basis = st.radio(
-        "02 포지셔닝 (필수)",
-        options=["claude", "gemini"],
-        format_func=lambda x: {"claude": "🟠 Claude", "gemini": "🔵 Gemini"}[x],
-        key="naming_pos_basis",
-        index=0 if pos_dict.get("claude") else 1,
-    )
+    pos_options = [m for m in ("claude", "gemini") if (pos_dict.get(m) or "").strip()]
+    if len(pos_options) >= 2:
+        pos_basis = st.radio(
+            "02 포지셔닝 (필수)",
+            options=pos_options,
+            format_func=_label_fmt,
+            key="naming_pos_basis",
+        )
+    elif pos_options:
+        pos_basis = pos_options[0]
+        st.caption(f"02 포지셔닝: {_label_fmt(pos_basis)} (단일)")
+    else:
+        pos_basis = "claude"
+        st.caption("02 포지셔닝 결과 없음")
 with c2:
-    detail_options = ["claude", "gemini", "(생략)"]
-    detail_default = 2  # 기본은 생략
-    if detail_dict.get("claude"):
-        detail_default = 0
-    elif detail_dict.get("gemini"):
-        detail_default = 1
+    detail_options = [m for m in ("claude", "gemini") if (detail_dict.get(m) or "").strip()] + ["(생략)"]
+    detail_default = 0 if len(detail_options) > 1 else (len(detail_options) - 1)
     detail_basis = st.radio(
         "04 상세페이지",
         options=detail_options,
-        format_func=lambda x: {"claude": "🟠 Claude", "gemini": "🔵 Gemini", "(생략)": "— 생략"}[x],
+        format_func=_label_fmt,
         key="naming_detail_basis",
         index=detail_default,
     )
 with c3:
-    channel_options = ["claude", "gemini", "(생략)"]
-    channel_default = 2
-    if channel_dict.get("claude"):
-        channel_default = 0
-    elif channel_dict.get("gemini"):
-        channel_default = 1
+    channel_options = [m for m in ("claude", "gemini") if (channel_dict.get(m) or "").strip()] + ["(생략)"]
+    channel_default = 0 if len(channel_options) > 1 else (len(channel_options) - 1)
     channel_basis = st.radio(
         "05 채널",
         options=channel_options,
-        format_func=lambda x: {"claude": "🟠 Claude", "gemini": "🔵 Gemini", "(생략)": "— 생략"}[x],
+        format_func=_label_fmt,
         key="naming_channel_basis",
         index=channel_default,
     )
@@ -205,10 +211,7 @@ detail_text = detail_dict.get(detail_basis, "") if detail_basis != "(생략)" el
 channel_text = channel_dict.get(channel_basis, "") if channel_basis != "(생략)" else ""
 
 # ── Step 5: 실행 ─────────────────────────────────────────
-st.caption(
-    f"Claude: `{cfg['claude_model_02']}` · Gemini: `{cfg['gemini_model_02']}`  "
-    "(02 모델 재사용 — [⚙️ 설정](0_settings)에서 변경)"
-)
+st.caption(caption_for_stage("03", cfg))
 
 if st.button(f"🚀 {naming_type} 네이밍 실행 (Claude + Gemini)", type="primary",
              use_container_width=True, disabled=not pos_text.strip()):
@@ -232,8 +235,8 @@ if st.button(f"🚀 {naming_type} 네이밍 실행 (Claude + Gemini)", type="pri
     with st.spinner("Claude + Gemini 호출 중…"):
         naming_03 = generate_both(
             system_prompt, user_input,
-            claude_model=cfg["claude_model_02"],
-            gemini_model=cfg["gemini_model_02"],
+            claude_model=claude_model_03,
+            gemini_model=gemini_model_03,
         )
 
     try:
@@ -258,13 +261,22 @@ latest = _to_dict_by_model(filtered_rows)
 if any(latest.values()):
     st.divider()
     st.markdown(f"**03 {naming_type} 네이밍 결과 (최신)**")
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("### 🟠 Claude")
-        st.markdown(latest.get("claude") or "_(empty)_")
-    with c2:
-        st.markdown("### 🔵 Gemini")
-        st.markdown(latest.get("gemini") or "_(empty)_")
+    if claude_model_03 and gemini_model_03:
+        rc1, rc2 = st.columns(2)
+        with rc1:
+            st.markdown("### 🟠 Claude")
+            st.markdown(latest.get("claude") or "_(empty)_")
+        with rc2:
+            st.markdown("### 🔵 Gemini")
+            st.markdown(latest.get("gemini") or "_(empty)_")
+    else:
+        st.caption("ℹ️ 비교 모델 off — 주 사용 모델 결과만 표시합니다.")
+        if claude_model_03:
+            st.markdown("### 🟠 Claude")
+            st.markdown(latest.get("claude") or "_(empty)_")
+        elif gemini_model_03:
+            st.markdown("### 🔵 Gemini")
+            st.markdown(latest.get("gemini") or "_(empty)_")
 
 # 전체 이력 (모든 분류 포함, 분류 미기록 옛 row도 포함)
 if naming_rows:

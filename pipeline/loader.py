@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from .settings import excluded_fields_for_stage
+
 AGENTS_DIR = Path(__file__).parent.parent / "agents"
 
 AGENT_KEYS = {
@@ -26,6 +28,14 @@ PROMPT_PART_ORDER = ("core.md", "examples.md", "expressions.md", "qa_checklist.m
 
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
+
+
+def _filter_product(product: dict, stage: str, cfg: dict | None = None) -> dict:
+    """settings에서 해당 단계의 excluded_fields를 읽어 product dict에서 제거한 복사본 반환."""
+    excluded = set(excluded_fields_for_stage(stage, cfg))
+    if not excluded:
+        return product
+    return {k: v for k, v in product.items() if k not in excluded}
 
 
 def load_agent_prompt(agent: str) -> str:
@@ -70,8 +80,9 @@ def load_vision_prompt(engine: str = "claude") -> str:
     return _read(base / "core.md")
 
 
-def build_vision_input(product: dict) -> str:
+def build_vision_input(product: dict, cfg: dict | None = None) -> str:
     """Vision Pass 유저 텍스트. 이미지는 llm.py에서 별도 전달."""
+    product = _filter_product(product, "00", cfg)
     spec = {
         k: v for k, v in product.items()
         if k in ["제품명", "카테고리", "서브카테고리", "모델명",
@@ -86,9 +97,9 @@ def build_vision_input(product: dict) -> str:
 {json.dumps(spec, ensure_ascii=False, indent=2)}"""
 
 
-def build_user_input_01(product: dict) -> str:
+def build_user_input_01(product: dict, cfg: dict | None = None) -> str:
     """01_deficit_target용 유저 프롬프트. 제품 스펙을 MD에 정의된 출력 형식으로 요청."""
-    product_block = json.dumps(product, ensure_ascii=False, indent=2)
+    product_block = json.dumps(_filter_product(product, "01", cfg), ensure_ascii=False, indent=2)
     return f"""다음 제품에 대해 결핍·타겟 분석을 수행하라.
 
 [제품 정보]
@@ -104,9 +115,9 @@ def build_user_input_01(product: dict) -> str:
 - qa_checklist.md 규칙을 위반하지 마라."""
 
 
-def build_user_input_02(product: dict, target: dict) -> str:
+def build_user_input_02(product: dict, target: dict, cfg: dict | None = None) -> str:
     """02_positioning용 유저 프롬프트. 01에서 선택된 타겟에 대한 포지셔닝 플랜."""
-    product_block = json.dumps(product, ensure_ascii=False, indent=2)
+    product_block = json.dumps(_filter_product(product, "02", cfg), ensure_ascii=False, indent=2)
     target_block = json.dumps(target, ensure_ascii=False, indent=2)
     return f"""다음 타겟에 대한 포지셔닝 플랜을 수립하라.
 
@@ -127,12 +138,12 @@ def build_user_input_02(product: dict, target: dict) -> str:
 
 
 def build_user_input_04(product: dict, target: dict, positioning_text: str,
-                        positioning_basis: str = "") -> str:
+                        positioning_basis: str = "", cfg: dict | None = None) -> str:
     """04_detail_page용 유저 프롬프트.
 
     입력: 제품 + 01 선택 타겟 + 02 포지셔닝 결과(사용자가 고른 basis 모델 1개).
     """
-    product_block = json.dumps(product, ensure_ascii=False, indent=2)
+    product_block = json.dumps(_filter_product(product, "04", cfg), ensure_ascii=False, indent=2)
     target_block = json.dumps(target, ensure_ascii=False, indent=2)
     basis_label = f" (기준: {positioning_basis})" if positioning_basis else ""
     return f"""다음 타겟·포지셔닝을 바탕으로 상세페이지 콘티를 작성하라.
@@ -167,6 +178,7 @@ def build_user_input_03(
     channel_text: str = "",
     channel_basis: str = "",
     naming_type: str = "제품명",
+    cfg: dict | None = None,
 ) -> str:
     """03_naming용 유저 프롬프트.
 
@@ -178,7 +190,7 @@ def build_user_input_03(
       - "브랜드명": 회사·라인의 우산 이름. 여러 제품을 묶는 상위 정체성.
     각 분류는 사고 결이 달라 한 번 호출에 한 분류만 깊이 있게 다룬다.
     """
-    product_block = json.dumps(product, ensure_ascii=False, indent=2)
+    product_block = json.dumps(_filter_product(product, "03", cfg), ensure_ascii=False, indent=2)
     target_block = json.dumps(target, ensure_ascii=False, indent=2)
     pos_label = f" (기준: {positioning_basis})" if positioning_basis else ""
 
@@ -256,12 +268,12 @@ def build_user_input_03(
 
 
 def build_user_input_05(product: dict, target: dict, positioning_text: str,
-                        positioning_basis: str = "") -> str:
+                        positioning_basis: str = "", cfg: dict | None = None) -> str:
     """05_channel용 유저 프롬프트.
 
     입력: 제품 + 01 선택 타겟 + 02 포지셔닝 결과(basis 1개).
     """
-    product_block = json.dumps(product, ensure_ascii=False, indent=2)
+    product_block = json.dumps(_filter_product(product, "05", cfg), ensure_ascii=False, indent=2)
     target_block = json.dumps(target, ensure_ascii=False, indent=2)
     basis_label = f" (기준: {positioning_basis})" if positioning_basis else ""
     return f"""다음 타겟·포지셔닝을 바탕으로 채널·물길 전략을 수립하라.

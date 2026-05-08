@@ -97,27 +97,37 @@ def cross_lint_both(
     claude_model: str | None = None,
     gemini_model: str | None = None,
 ) -> dict[str, str]:
-    """Claude 출력 → Gemini 검수 / Gemini 출력 → Claude 검수 (병렬).
+    """교차 린터 — builder 결과를 다른 family가 검수.
 
-    반환: {"claude": "Gemini가 검수한 결과", "gemini": "Claude가 검수한 결과"}
-          (키는 builder 기준 — "이 builder의 결과를 검수한 텍스트")
+    Claude 출력은 Gemini가 검수, Gemini 출력은 Claude가 검수 (병렬).
+    검수자 모델이 None이거나 builder 결과가 비어있으면 해당 키는 빈 문자열.
+
+    반환: {"claude": "Gemini가 검수한 텍스트", "gemini": "Claude가 검수한 텍스트"}
     """
-    results: dict[str, str] = {}
+    results: dict[str, str] = {"claude": "", "gemini": ""}
     with ThreadPoolExecutor(max_workers=2) as ex:
-        # Claude 출력은 Gemini가 검수
-        fut_c = ex.submit(_lint_one, agent, claude_output, "gemini",
-                          claude_model, gemini_model)
-        # Gemini 출력은 Claude가 검수
-        fut_g = ex.submit(_lint_one, agent, gemini_output, "claude",
-                          claude_model, gemini_model)
-        try:
-            results["claude"] = fut_c.result()
-        except Exception as e:
-            results["claude"] = f"[STATUS] ERROR\n린터 호출 실패: {type(e).__name__}: {e}"
-        try:
-            results["gemini"] = fut_g.result()
-        except Exception as e:
-            results["gemini"] = f"[STATUS] ERROR\n린터 호출 실패: {type(e).__name__}: {e}"
+        # Claude builder 결과는 Gemini가 검수 (gemini_model 필요)
+        fut_c = (
+            ex.submit(_lint_one, agent, claude_output, "gemini",
+                      claude_model, gemini_model)
+            if claude_output and gemini_model else None
+        )
+        # Gemini builder 결과는 Claude가 검수 (claude_model 필요)
+        fut_g = (
+            ex.submit(_lint_one, agent, gemini_output, "claude",
+                      claude_model, gemini_model)
+            if gemini_output and claude_model else None
+        )
+        if fut_c is not None:
+            try:
+                results["claude"] = fut_c.result()
+            except Exception as e:
+                results["claude"] = f"[STATUS] ERROR\n린터 호출 실패: {type(e).__name__}: {e}"
+        if fut_g is not None:
+            try:
+                results["gemini"] = fut_g.result()
+            except Exception as e:
+                results["gemini"] = f"[STATUS] ERROR\n린터 호출 실패: {type(e).__name__}: {e}"
     return results
 
 

@@ -143,10 +143,11 @@ CREATE TABLE 상품 (
     원산지              TEXT DEFAULT '중국',
 
     -- 가격
+    온라인판매가격      INTEGER,
     소매가              INTEGER,
     도매가              INTEGER,
-    실제가              INTEGER,
-    평균도매가          INTEGER,
+    실제받는가격        INTEGER,
+    평균입고가          INTEGER,
 
     -- 재고
     실시간재고          INTEGER DEFAULT 0,
@@ -1041,3 +1042,95 @@ b0ed03b chore: .gitignore 보완 (부수자료 제외)
 - data_contract proactive 해결 (origin 메타태그) — 보류
 - 린터 reviewer를 Opus로 격상 — 검토 가치 있음
 - 섹션 부분 수정 시 린터 자동 재호출 여부 — 사용자 선호 미정
+
+---
+
+## 🔖 다음 채팅방 시작 시 안내 (2026-05-05 시점) — 최신
+
+### 직전 세션에서 한 일 (2026-05-05)
+
+UI/데이터 구조 정리 7개 질문 중 **5개 완료, 2개 보류, 2개 남음**.
+
+#### A. 모델 설정 페이지 전면 개편 (질문 3 완료)
+- `pages/0_settings.py` 재작성: 단계 00·01·02 → **00~05 전 단계** 6개 카드. "Claude/Gemini 분리" → "**주 사용 모델 / 비교 모델**" 통합 셀렉트 + 비교 단계별 on/off 체크박스.
+- `pipeline/settings.py`: `MODELS_ORDERED` 통합 리스트 (`claude-sonnet-4-6` → `claude-opus-4-7` → `claude-haiku-4-5-20251001` → `gemini-2.5-flash` → `gemini-2.5-pro`). **`gemini-2.0-flash` 후보 제거**. `DEFAULTS` 신구조 + `models_for_stage()`/`model_for_family()`/`caption_for_stage()` 헬퍼.
+- `settings.json` 신구조 재생성: `primary_model_*` / `compare_model_*` / `compare_enabled_*` × 6단계 = 18키. 기존 사용자 설정 (01·02 비교 모델 `gemini-2.5-pro`) 보존.
+- 호출부 일괄 갱신: `pages/2_pipeline.py` (01/02/04/05 단계별 변수 unpack), `pages/2_naming.py` (03 단계 키 사용).
+
+#### A+. 비교 모델 off 처리 (자동 추가)
+- `pipeline/llm.py` `generate_both` / `generate_vision_both`: 모델이 None이면 호출 생략 (빈 문자열 반환). 503 에러 안 뜸.
+- `pipeline/lint.py` `cross_lint_both`: 동일 처리.
+- UI (`pages/2_pipeline.py` 4개 결과 영역, `pages/2_naming.py` 03 결과): `_result_layout()` / `_compare_off_caption()` 헬퍼로 단일/이중 컬럼 분기. 비교 off 시 주 모델만 full width + "ℹ️ 비교 모델 off" 안내.
+- 02/04/05의 basis radio: 사용 가능한 family만 옵션, 1개면 자동 선택.
+- 03 네이밍의 pos/detail/channel basis도 동적 옵션화.
+
+#### B. 가격 영역 재설계 (질문 4 완료)
+- **DB 마이그레이션 1회 실행 완료**: `db/run_rename_가격_컬럼.py` (운영 DB).
+  - `실제가` → `실제받는가격`
+  - `평균도매가` → `평균입고가`
+  - 신규 `온라인판매가격 INTEGER` (← 처음에 `온라인판매가`였으나 `온라인판매가능` BOOLEAN과 헷갈려 `온라인판매가격`으로 즉시 정정).
+- UI (`pages/2_product_edit.py:1488`): "💸 온라인 판매 가격 (현재 판매가)" 별도 컨테이너 + 시각 강조 + 캡션 "00~05 단계가 가격 언급 시 우선 참조". 4컬럼 라벨 갱신.
+- 참조 경로: `pipeline/supabase_read.py:get_product_spec()` 가격 dict 신키 + `온라인판매가격` 최상위. `pages/2_pipeline.py:328` 가격 캡션에 강조 노출.
+- **권위 규약 갱신** (`agents/_shared/data_contract.md`): 가격 권위 필드/충돌 우선순위에 `온라인판매가격` 최상위 명시. LLM이 가격 언급 시 이 필드 우선 참조.
+- ⚠️ **재실행 금지**: rename SQL은 이미 적용됨. 컬럼이 신규명으로 존재.
+
+#### E. 판매자 메모 / 기타 제품 특징 영역 재구성 (질문 7 완료)
+- **DB 마이그레이션 1회 실행 완료** (`db/run_add_제품특징_영역.py`):
+  - 신규 `제품특징_bullet JSONB DEFAULT '[]'` (스펙 탭, 비전패스 자동 추출 + 판매자 수정, 01~05 시스템 참고 ✅)
+  - 신규 `제품특징_추가 TEXT` (판매자 정보 탭, 판매자 수동, 01~05 시스템 참고 ✅)
+  - 데이터 이관: 기존 `특징` 텍스트 줄바꿈 split → `제품특징_bullet` JSON 배열로 변환 (3 row 이관됨).
+  - 기존 `특징` 컬럼은 일정 기간 유지 후 별도 마이그레이션으로 제거 예정.
+- UI 영역 분리 (`pages/2_product_edit.py`):
+  - **스펙 탭**: 기존 "📝 판매자 메모" → "🏷️ 기타 제품 특징" (bullet text_area, 한 줄에 하나) + 연관 키워드.
+  - **판매자 정보 탭**: "📌 제품 특징 추가" (시스템 참고) + "🗒️ 판매자 개인 메모" (시스템 미참조). 기존 "판매자 특이사항" 라벨 변경.
+- 저장 dict 2곳 갱신: `특징` 키 제거, `제품특징_bullet` (JSON 배열) + `제품특징_추가` 추가.
+- `pipeline/supabase_read.py:get_product_spec()`: 새 필드 2개 포함, 기존 `"특징"` 키 제거 (LLM 입력에서 이중 노출 방지).
+- **`판매자메모`는 시스템 미참조** — D 단계의 `excluded_fields_*` 기본값에 포함되도록 설계.
+
+#### E+. 시각설명 → 스펙 + bullet 자동 추출 통합 (질문 7 후속)
+- 사용자 피드백: "시각설명 저장 후 별도 '추출 실행' 버튼 누르는 것이 번거로움. 비전패스 한 번에 다 채워졌으면."
+- `pipeline/vision_merge.py:extract_스펙()`: 단일 LLM 호출에서 SPEC_FIELDS + `_특징_bullet` 함께 반환하도록 통합. 별도 `extract_특징_bullet` 함수 제거. 프롬프트 끝에 `_BULLET_GUIDE` 동적 추가 (extract_spec.md 자체는 변경 없음).
+- `pages/2_product_edit.py`:
+  - 신규 헬퍼 `_auto_apply_after_vision(pid, 시각설명)`: 시각설명 저장 직후 자동 LLM 호출 → "빈 필드만 채우기" 모드로 SPEC_FIELDS 자동 반영 + bullet은 기존과 중복 제거 후 추가 → 즉시 DB update.
+  - 시각설명 저장 핸들러 **3곳** (충돌 해소 후 단독 저장 / 충돌 해소 후 통합 저장 / 직접 편집 저장)에 헬퍼 호출 삽입. 토스트 `"저장 완료! 자동 반영: 스펙 N개 / bullet M개"`.
+  - 기존 "🤖 추출 실행" expander는 라벨 "(수동 재실행)" 추가, 캡션으로 "시각설명 저장 시 자동 1회 실행됨. 재실행/덮어쓰기용" 안내.
+  - 별도 "🤖 비전패스 결과로 bullet 자동 제안 받기" 버튼 제거 (통합으로 불필요).
+
+#### 안전장치
+- 자동 적용은 **빈 필드만 채우기** 모드 — 손으로 채운 값 보존.
+- bullet은 기존 항목 중복 제거 후 추가만 (덮어쓰기 X).
+- 전체 덮어쓰기는 기존 "🤖 추출 실행" 버튼 → "전체 덮어쓰기" 라디오로 수동 진행.
+- LLM 실패 시 토스트 경고만 (시각설명 저장 자체는 성공 유지).
+
+### 본 세션 보류 / 남은 작업
+
+#### ⏸️ 보류 (사용자 결정)
+- **질문 2 — 비전패스 작은 글씨/모델명 혼동** (예: 모델명 필드에 전파인증 번호 입력됨). 현재 이미지는 원본 사이즈로 전송 중 ([pipeline/llm.py:115-130, 147-158](pipeline/llm.py:115)) — 리사이징 X. 모델 자체의 시야 한계 또는 프롬프트 강화 부족. 후보 옵션:
+  - (1) `core_claude.md`/`core_gemini.md`/`extract_spec.md` 프롬프트 강화 (CLAUDE.md 보호 규칙 → 사용자 사전 승인 필수)
+  - (2) 텍스트 영역 zoom 분석 단계 추가
+  - (3) OCR 단계 사전 추가
+
+#### 🔜 다음 우선순위 (D, C — 새 세션에서 진행)
+
+1. **D. 00~05 단계 참고 필드 컨트롤** (질문 6)
+   - `pages/0_settings.py` 하단에 "참고 필드 관리" 섹션 추가
+   - 단계별 (00~05) "참고에서 제외할 필드" 멀티셀렉트
+   - **재고 영역 5개 필드** (`실시간재고`, `처리후재고`, `재고수량`, `재입고예정`, `단종여부`) **기본 제외**
+   - **`판매자메모`도 기본 제외** (E 항에서 시스템 미참조로 설계됨)
+   - `pipeline/settings.py` `DEFAULTS`에 `excluded_fields_00~05` 추가
+   - `pipeline/loader.py`에 `_filter_product(product, stage)` 헬퍼 + `build_user_input_00~05`에서 호출
+
+2. **C. 사이드바 점검 + 이미지 갤러리 강화** (질문 5)
+   - 사이드바 메뉴는 **유지** (네이밍·파이프라인·갤러리·상품파일 모두 별도 역할). 유지 결정 사유 `docs/decisions/`에 1줄 기록.
+   - `pages/3_gallery.py`: **계정 트리 네비게이션** (voyager / donnamoo → 폴더 → 파일 그리드) + 출처(계정/폴더/원본 URL) 라벨 강화 + 검색·필터 (파일명, 업로드 날짜, 제품 매칭 여부).
+   - `pages/4_files.py`: DB 디버그용 그대로 유지, 캡션에 "DB 원본 뷰" 명시.
+
+### 새 채팅방 시작 시 가장 먼저
+1. 이 `PROJECT_STATUS.md` (현재 섹션) 읽기
+2. plan 파일 확인 (작업 계획 + 진행 상황): `C:\Users\kyum\.claude\plans\c-users-kyum-desktop-cozy-grove.md`
+3. D부터 진행 (E의 `판매자메모` 기본 제외 설계가 D의 `excluded_fields_*` DEFAULTS에 반영되어야 함 — 종속성)
+
+### 자동 로드되는 컨텍스트
+- 글로벌 CLAUDE.md (사용자 철칙)
+- 프로젝트 CLAUDE.md (자동화 판매 폴더)
+- 메모리 (MEMORY.md 및 연결 파일들)

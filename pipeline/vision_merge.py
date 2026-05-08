@@ -103,17 +103,23 @@ def compare_시각설명(
 # 스펙 추출
 # ──────────────────────────────────────────────────────────────
 
-def extract_스펙(시각설명: str, model: str | None = None) -> dict:
-    """시각설명에서 스펙 필드들을 구조화 JSON으로 추출.
+# bullet 기준은 extract_spec.md에 통합됨 (별도 인라인 가이드 제거)
 
-    spec_schema.SPEC_FIELDS 정의 기반. 추출 못한 필드는 None.
+
+def extract_스펙(시각설명: str, model: str | None = None) -> dict:
+    """시각설명에서 SPEC_FIELDS + 기타 제품 특징(bullet)을 한 번의 호출로 함께 추출.
+
+    spec_schema.SPEC_FIELDS 정의 기반의 구조화 필드 + 그 외 판매 소구 포인트를
+    `_특징_bullet` 키로 함께 반환한다. 추출 못한 필드는 None.
 
     Returns:
-        {필드명: 값 or None, ...}.
+        {필드명: 값 or None, ..., "_특징_bullet": ["...", ...]}.
         파싱 실패 시 {"_error": "...", "_raw": "..."}.
     """
     if not 시각설명 or not 시각설명.strip():
-        return {f["name"]: None for f in SPEC_FIELDS}
+        out: dict = {f["name"]: None for f in SPEC_FIELDS}
+        out["_특징_bullet"] = []
+        return out
 
     model = model or DEFAULT_EXTRACT_MODEL
     template = _load_prompt("extract_spec.md")
@@ -121,7 +127,7 @@ def extract_스펙(시각설명: str, model: str | None = None) -> dict:
 
     user_input = (
         f"[시각설명]\n{시각설명}\n\n"
-        "위에서 스펙 필드를 추출해 JSON으로 반환하세요."
+        "위에서 스펙 필드와 `_특징_bullet`을 함께 JSON으로 반환하세요."
     )
 
     raw = _generate(system_prompt, user_input, model)
@@ -143,6 +149,14 @@ def extract_스펙(시각설명: str, model: str | None = None) -> dict:
         if isinstance(v, str) and not v.strip():
             v = None
         result[f["name"]] = v
+
+    # bullet 배열 정규화
+    bullets = parsed.get("_특징_bullet")
+    if isinstance(bullets, list):
+        result["_특징_bullet"] = [str(x).strip() for x in bullets if str(x).strip()]
+    else:
+        result["_특징_bullet"] = []
+
     return result
 
 
