@@ -65,6 +65,20 @@ class Storage(ABC):
     def get_상세페이지(self, target_id: int) -> list[dict]: ...
 
     @abstractmethod
+    def save_이미지디렉션(
+        self,
+        target_id: int,
+        model: str,
+        raw_output: str,
+        sections: list[dict] | None = None,
+        design_system: dict | None = None,
+        selection_method: str | None = None,
+    ) -> int: ...
+
+    @abstractmethod
+    def get_이미지디렉션(self, target_id: int) -> list[dict]: ...
+
+    @abstractmethod
     def save_채널(self, target_id: int, model: str, raw_output: str) -> int: ...
 
     @abstractmethod
@@ -91,6 +105,45 @@ class Storage(ABC):
 
     @abstractmethod
     def get_run_summary(self, run_id: int) -> dict: ...
+
+    # ── 작업 C: 타겟별 작업 이력 bulk 조회 ──────────────────
+    @abstractmethod
+    def get_result_summary_for_targets(
+        self, target_ids: list[int]
+    ) -> dict[int, set[str]]: ...
+
+    # ── 작업 D: 단계별 버전 이력 ────────────────────────────
+    @abstractmethod
+    def get_positioning_versions(
+        self, target_id: int, model: str
+    ) -> list[dict]: ...
+
+    @abstractmethod
+    def delete_positioning(self, positioning_id: int) -> None: ...
+
+    @abstractmethod
+    def get_상세페이지_versions(
+        self, target_id: int, model: str
+    ) -> list[dict]: ...
+
+    @abstractmethod
+    def delete_상세페이지(self, detail_id: int) -> None: ...
+
+    @abstractmethod
+    def get_이미지디렉션_versions(
+        self, target_id: int, model: str
+    ) -> list[dict]: ...
+
+    @abstractmethod
+    def delete_이미지디렉션(self, direction_id: int) -> None: ...
+
+    @abstractmethod
+    def get_채널_versions(
+        self, target_id: int, model: str
+    ) -> list[dict]: ...
+
+    @abstractmethod
+    def delete_채널(self, channel_id: int) -> None: ...
 
 
 class SupabaseStorage(Storage):
@@ -203,6 +256,40 @@ class SupabaseStorage(Storage):
         )
         return res.data or []
 
+    # ── 04-1 이미지 디렉션 ─────────────────────────────────
+    def save_이미지디렉션(
+        self,
+        target_id: int,
+        model: str,
+        raw_output: str,
+        sections: list[dict] | None = None,
+        design_system: dict | None = None,
+        selection_method: str | None = None,
+    ) -> int:
+        payload: dict = {
+            "타겟_id": target_id,
+            "모델": model,
+            "원본_출력": raw_output,
+        }
+        if sections is not None:
+            payload["섹션들"] = json.dumps(sections, ensure_ascii=False)
+        if design_system is not None:
+            payload["디자인시스템"] = json.dumps(design_system, ensure_ascii=False)
+        if selection_method is not None:
+            payload["선택_방식"] = selection_method
+        res = _db().table("엠군_이미지디렉션").insert(payload).execute()
+        return res.data[0]["id"]
+
+    def get_이미지디렉션(self, target_id: int) -> list[dict]:
+        res = (
+            _db().table("엠군_이미지디렉션")
+            .select("*")
+            .eq("타겟_id", target_id)
+            .order("모델")
+            .execute()
+        )
+        return res.data or []
+
     # ── 05 채널 ──────────────────────────────────────────
     def save_채널(self, target_id: int, model: str, raw_output: str) -> int:
         res = _db().table("엠군_채널").insert({
@@ -269,12 +356,13 @@ class SupabaseStorage(Storage):
         _db().table("엠군_실행").delete().eq("id", run_id).execute()
 
     def get_run_summary(self, run_id: int) -> dict:
-        """실행 1건의 요약: 선택된 타겟 + 02/04/05/03 결과 유무.
+        """실행 1건의 요약: 선택된 타겟 + 02/04/04-1/05/03 결과 유무.
 
         반환: {
           "selected_target": {라벨, 모델, 순위, ...} | None,
           "has_positioning": bool,
           "has_상세페이지": bool,
+          "has_이미지디렉션": bool,
           "has_채널": bool,
           "has_네이밍": bool,
           "target_count": int,
@@ -284,6 +372,7 @@ class SupabaseStorage(Storage):
         selected = next((t for t in targets if t.get("선택됨")), None)
         has_positioning = False
         has_detail = False
+        has_image_dir = False
         has_channel = False
         has_naming = False
         if selected:
@@ -292,6 +381,8 @@ class SupabaseStorage(Storage):
             has_positioning = bool(pos and any(p.get("원본_출력") for p in pos))
             det = self.get_상세페이지(tid)
             has_detail = bool(det and any(p.get("원본_출력") for p in det))
+            img = self.get_이미지디렉션(tid)
+            has_image_dir = bool(img and any(p.get("원본_출력") for p in img))
             ch = self.get_채널(tid)
             has_channel = bool(ch and any(p.get("원본_출력") for p in ch))
             nm = self.get_네이밍(tid)
@@ -300,6 +391,7 @@ class SupabaseStorage(Storage):
             "selected_target": selected,
             "has_positioning": has_positioning,
             "has_상세페이지": has_detail,
+            "has_이미지디렉션": has_image_dir,
             "has_채널": has_channel,
             "has_네이밍": has_naming,
             "target_count": len(targets),
@@ -317,6 +409,106 @@ class SupabaseStorage(Storage):
             except Exception:
                 pass
         return d
+
+    # ── 작업 C: 타겟별 작업 이력 bulk 조회 ──────────────────
+    def get_result_summary_for_targets(
+        self, target_ids: list[int]
+    ) -> dict[int, set[str]]:
+        """여러 타겟에 대해 어떤 단계 결과를 갖는지 한 번에 조회.
+
+        반환: {target_db_id: {"02", "04", "05", "03"}}
+              결과가 없는 타겟도 빈 set으로 포함.
+        """
+        out: dict[int, set[str]] = {tid: set() for tid in target_ids}
+        if not target_ids:
+            return out
+
+        # 각 테이블에서 타겟_id만 조회 (원본_출력은 가져오지 않음 — 가벼움)
+        for table, stage_code in (
+            ("엠군_포지셔닝", "02"),
+            ("엠군_상세페이지", "04"),
+            ("엠군_이미지디렉션", "04_1"),
+            ("엠군_채널", "05"),
+            ("엠군_네이밍", "03"),
+        ):
+            res = (
+                _db().table(table)
+                .select("타겟_id, 원본_출력")
+                .in_("타겟_id", target_ids)
+                .execute()
+            )
+            for row in (res.data or []):
+                if row.get("원본_출력"):
+                    tid = row.get("타겟_id")
+                    if tid in out:
+                        out[tid].add(stage_code)
+        return out
+
+    # ── 작업 D: 단계별 버전 이력 ────────────────────────────
+    def get_positioning_versions(
+        self, target_id: int, model: str
+    ) -> list[dict]:
+        """특정 타겟·모델의 02 포지셔닝 모든 버전을 최신순으로 반환."""
+        res = (
+            _db().table("엠군_포지셔닝")
+            .select("id, 모델, 원본_출력, 생성일")
+            .eq("타겟_id", target_id)
+            .eq("모델", model)
+            .order("id", desc=True)
+            .execute()
+        )
+        return res.data or []
+
+    def delete_positioning(self, positioning_id: int) -> None:
+        _db().table("엠군_포지셔닝").delete().eq("id", positioning_id).execute()
+
+    def get_상세페이지_versions(
+        self, target_id: int, model: str
+    ) -> list[dict]:
+        res = (
+            _db().table("엠군_상세페이지")
+            .select("id, 모델, 원본_출력, 생성일")
+            .eq("타겟_id", target_id)
+            .eq("모델", model)
+            .order("id", desc=True)
+            .execute()
+        )
+        return res.data or []
+
+    def delete_상세페이지(self, detail_id: int) -> None:
+        _db().table("엠군_상세페이지").delete().eq("id", detail_id).execute()
+
+    def get_이미지디렉션_versions(
+        self, target_id: int, model: str
+    ) -> list[dict]:
+        res = (
+            _db().table("엠군_이미지디렉션")
+            .select("id, 모델, 원본_출력, 섹션들, 디자인시스템, 선택_방식, 생성일")
+            .eq("타겟_id", target_id)
+            .eq("모델", model)
+            .order("id", desc=True)
+            .execute()
+        )
+        return res.data or []
+
+    def delete_이미지디렉션(self, direction_id: int) -> None:
+        _db().table("엠군_이미지디렉션").delete().eq("id", direction_id).execute()
+
+    def get_채널_versions(
+        self, target_id: int, model: str
+    ) -> list[dict]:
+        res = (
+            _db().table("엠군_채널")
+            .select("id, 모델, 원본_출력, 생성일")
+            .eq("타겟_id", target_id)
+            .eq("모델", model)
+            .order("id", desc=True)
+            .execute()
+        )
+        return res.data or []
+
+    def delete_채널(self, channel_id: int) -> None:
+        _db().table("엠군_채널").delete().eq("id", channel_id).execute()
 
 
 def get_storage() -> Storage:

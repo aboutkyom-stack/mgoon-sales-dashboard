@@ -27,7 +27,7 @@ MODELS_ORDERED = [
     "gemini-2.5-pro",
 ]
 
-STAGES = ("00", "01", "02", "03", "04", "05")
+STAGES = ("00", "01", "02", "03", "04", "04_1", "05")
 
 _DEFAULT_PRIMARY = "claude-sonnet-4-6"
 _DEFAULT_COMPARE = "gemini-2.5-flash"
@@ -36,15 +36,23 @@ _DEFAULT_COMPARE = "gemini-2.5-flash"
 DEFAULT_EXCLUDED_FIELDS: list[str] = ["재고", "판매자메모", "검수완료", "검수메모", "엠군상태"]
 
 # 전역 판매자 특성 기본값 (settings.json에 저장)
-DEFAULT_판매자특성: list[str] = []
+# 두 카테고리로 분리:
+#  - 판매자특성_활용: 01~05 파이프라인이 참조 (조건부 활용)
+#  - 판매자특성_메모: 판매자 본인만 참고, 파이프라인 미참조
+DEFAULT_판매자특성_활용: list[str] = []
+DEFAULT_판매자특성_메모: list[str] = []
 
 
 def _build_defaults() -> dict:
-    out: dict = {"판매자특성": list(DEFAULT_판매자특성)}
+    out: dict = {
+        "판매자특성_활용": list(DEFAULT_판매자특성_활용),
+        "판매자특성_메모": list(DEFAULT_판매자특성_메모),
+    }
     for s in STAGES:
         out[f"primary_model_{s}"] = _DEFAULT_PRIMARY
         out[f"compare_model_{s}"] = _DEFAULT_COMPARE
         out[f"compare_enabled_{s}"] = True
+        out[f"lint_enabled_{s}"] = False  # 외부 린터(교차 검수) — 비용 발생, 기본 off
         out[f"excluded_fields_{s}"] = list(DEFAULT_EXCLUDED_FIELDS)
     return out
 
@@ -57,6 +65,9 @@ def load() -> dict:
     if SETTINGS_PATH.exists():
         try:
             saved = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+            # 마이그레이션: 구 '판매자특성' → '판매자특성_활용'
+            if "판매자특성" in saved and "판매자특성_활용" not in saved:
+                saved["판매자특성_활용"] = saved.pop("판매자특성")
             # 신 키만 채택 (구 키는 사일런트 폐기)
             saved_clean = {k: v for k, v in saved.items() if k in DEFAULTS}
             return {**DEFAULTS, **saved_clean}
@@ -65,13 +76,27 @@ def load() -> dict:
     return dict(DEFAULTS)
 
 
-def load_판매자특성() -> list[str]:
-    """전역 판매자 특성 목록 반환."""
-    cfg = load()
-    val = cfg.get("판매자특성", [])
+def _coerce_list(val) -> list[str]:
     if isinstance(val, list):
         return [str(x).strip() for x in val if str(x).strip()]
     return []
+
+
+def load_판매자특성_활용() -> list[str]:
+    """파이프라인 활용형 판매자 특성 목록. 01~05가 조건부 참조."""
+    cfg = load()
+    return _coerce_list(cfg.get("판매자특성_활용", []))
+
+
+def load_판매자특성_메모() -> list[str]:
+    """개인 메모용 판매자 특성 목록. 파이프라인 미참조."""
+    cfg = load()
+    return _coerce_list(cfg.get("판매자특성_메모", []))
+
+
+def load_판매자특성() -> list[str]:
+    """[하위 호환] 활용형만 반환. 신규 코드는 load_판매자특성_활용() 사용."""
+    return load_판매자특성_활용()
 
 
 def save(settings: dict) -> None:
@@ -117,6 +142,44 @@ def model_for_family(family: str, stage: str, cfg: dict | None = None) -> str | 
     if family == "gemini":
         return gm
     return None
+
+
+def lint_enabled_for_stage(stage: str, cfg: dict | None = None) -> bool:
+    """단계별 외부 린터(교차 검수) 사용 여부.
+
+    비교 모델 토글과 독립적으로 운영. 비용이 발생하므로 기본값은 False.
+    """
+    cfg = cfg or load()
+    return bool(cfg.get(f"lint_enabled_{stage}", False))
+
+
+def lint_models_for_stage(
+    stage: str, cfg: dict | None = None
+) -> tuple[str | None, str | None]:
+    """린터(교차 검수)에 쓰일 (claude_model, gemini_model) 반환.
+
+    `models_for_stage`와 달리 compare_enabled를 무시하고 항상 두 family를 노출.
+    같은 family인 비교 모델은 자가 편향 회피 위해 무시.
+
+    primary와 compare가 다른 family일 때만 두 슬롯이 채워진다.
+    """
+    cfg = cfg or load()
+    primary = cfg.get(f"primary_model_{stage}") or _DEFAULT_PRIMARY
+    compare = cfg.get(f"compare_model_{stage}")
+
+    pf = family_of(primary)
+    claude_m: str | None = primary if pf == "claude" else None
+    gemini_m: str | None = primary if pf == "gemini" else None
+
+    if compare:
+        cf = family_of(compare)
+        if cf != pf:
+            if cf == "claude":
+                claude_m = compare
+            elif cf == "gemini":
+                gemini_m = compare
+
+    return claude_m, gemini_m
 
 
 def caption_for_stage(stage: str, cfg: dict | None = None) -> str:

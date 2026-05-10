@@ -14,12 +14,13 @@ from .settings import excluded_fields_for_stage
 AGENTS_DIR = Path(__file__).parent.parent / "agents"
 
 AGENT_KEYS = {
-    "vision_pass":    "00_vision_pass",
-    "deficit_target": "01_deficit_target",
-    "positioning":    "02_positioning",
-    "naming":         "03_naming",
-    "detail_page":    "04_detail_page",
-    "channel":        "05_channel",
+    "vision_pass":     "00_vision_pass",
+    "deficit_target":  "01_deficit_target",
+    "positioning":     "02_positioning",
+    "naming":          "03_naming",
+    "detail_page":     "04_detail_page",
+    "image_direction": "04_1_image_direction",
+    "channel":         "05_channel",
 }
 
 # 합치기 순서. 폴더에 존재하는 파일만 골라서 합친다.
@@ -97,44 +98,51 @@ def build_vision_input(product: dict, cfg: dict | None = None) -> str:
 {json.dumps(spec, ensure_ascii=False, indent=2)}"""
 
 
+def load_instruction(agent: str, variant: str | None = None) -> str:
+    """단계별 user_input 템플릿(instruction.md) 로드.
+
+    - agent: AGENT_KEYS의 키 (deficit_target/positioning/detail_page/channel/naming)
+    - variant: 03_naming은 "제품명"|"브랜드명"으로 분기 (instruction_{variant}.md)
+    """
+    slug = AGENT_KEYS.get(agent)
+    if not slug:
+        raise ValueError(f"unknown agent: {agent}")
+    base = AGENTS_DIR / slug
+    if variant:
+        path = base / f"instruction_{variant}.md"
+    else:
+        path = base / "instruction.md"
+    if not path.exists():
+        raise FileNotFoundError(f"instruction not found: {path}")
+    return _read(path)
+
+
+def save_instruction(agent: str, content: str, variant: str | None = None) -> None:
+    """instruction.md 저장 (settings 페이지에서 편집한 내용 영속화)."""
+    slug = AGENT_KEYS.get(agent)
+    if not slug:
+        raise ValueError(f"unknown agent: {agent}")
+    base = AGENTS_DIR / slug
+    if variant:
+        path = base / f"instruction_{variant}.md"
+    else:
+        path = base / "instruction.md"
+    path.write_text(content, encoding="utf-8")
+
+
 def build_user_input_01(product: dict, cfg: dict | None = None) -> str:
-    """01_deficit_target용 유저 프롬프트. 제품 스펙을 MD에 정의된 출력 형식으로 요청."""
+    """01_deficit_target용 유저 프롬프트. 정적 지시문은 instruction.md에서 로드."""
     product_block = json.dumps(_filter_product(product, "01", cfg), ensure_ascii=False, indent=2)
-    return f"""다음 제품에 대해 결핍·타겟 분석을 수행하라.
-
-[제품 정보]
-{product_block}
-
-[지시]
-- 위 시스템 프롬프트(core.md)에 정의된 출력 형식을 엄수하라.
-- 타겟 후보는 3개 이상 뽑되, 각 타겟이 서로 구분되는 결핍 각도여야 한다.
-- 각 타겟에 대해: 직업+나이+상황, 핵심 결핍 한 줄, 결핍 원천(부족/불편/불안/욕망),
-  구매편익(기능/경험/상징), 관여도(1~10), 주요 채널(구체 커뮤니티/카페 이름까지), 비고.
-- 추천 타겟 1개를 뽑고 그 타겟의 욕구깡패 3차 욕구까지 기술하라.
-- 등가교환 경고, 이상한 대안 힌트, 제로마케팅 적용 가능성도 마지막에 포함.
-- qa_checklist.md 규칙을 위반하지 마라."""
+    template = load_instruction("deficit_target")
+    return template.replace("{product}", product_block)
 
 
 def build_user_input_02(product: dict, target: dict, cfg: dict | None = None) -> str:
     """02_positioning용 유저 프롬프트. 01에서 선택된 타겟에 대한 포지셔닝 플랜."""
     product_block = json.dumps(_filter_product(product, "02", cfg), ensure_ascii=False, indent=2)
     target_block = json.dumps(target, ensure_ascii=False, indent=2)
-    return f"""다음 타겟에 대한 포지셔닝 플랜을 수립하라.
-
-[제품 정보]
-{product_block}
-
-[01에서 확정된 타겟]
-{target_block}
-
-[지시]
-- core.md 출력 형식(■1~6)을 엄수하라.
-- 구매 CV는 판매자 시각이 아닌 타겟의 시각으로 뽑아라.
-- 포지셔닝 맵의 두 축은 서로 구분되는 개념이어야 한다.
-- "두 개 까고 두 개 넣기"는 실제 경쟁사·경쟁 유형을 특정해서 구체적으로 써라.
-- 상세페이지 오프닝 초안은 카피로 바로 쓸 수 있는 문장이어야 한다.
-- 가치더하기는 억지스러운 모듈화·알파벳 남용 금지.
-- qa_checklist.md 규칙을 위반하지 마라."""
+    template = load_instruction("positioning")
+    return template.replace("{product}", product_block).replace("{target}", target_block)
 
 
 def build_user_input_04(product: dict, target: dict, positioning_text: str,
@@ -146,26 +154,44 @@ def build_user_input_04(product: dict, target: dict, positioning_text: str,
     product_block = json.dumps(_filter_product(product, "04", cfg), ensure_ascii=False, indent=2)
     target_block = json.dumps(target, ensure_ascii=False, indent=2)
     basis_label = f" (기준: {positioning_basis})" if positioning_basis else ""
-    return f"""다음 타겟·포지셔닝을 바탕으로 상세페이지 콘티를 작성하라.
+    template = load_instruction("detail_page")
+    return (
+        template
+        .replace("{product}", product_block)
+        .replace("{target}", target_block)
+        .replace("{positioning_basis_label}", basis_label)
+        .replace("{positioning}", positioning_text)
+    )
 
-[제품 정보]
-{product_block}
 
-[01에서 확정된 타겟]
-{target_block}
+def build_user_input_04_1(
+    product: dict,
+    target: dict,
+    positioning_text: str,
+    detail_text: str,
+    positioning_basis: str = "",
+    detail_basis: str = "",
+    cfg: dict | None = None,
+) -> str:
+    """04_1_image_direction용 유저 프롬프트.
 
-[02 포지셔닝 결과{basis_label}]
-{positioning_text}
-
-[지시]
-- core.md 출력 형식을 엄수하라 (선택 방식 + 콘티 표 + 사은품 전략 + 디자인 주의사항).
-- 5가지 설득 방식 중 이 제품·타겟에 가장 적합한 주 방식 1개를 선택하고 이유를 한 줄로 명시하라.
-- 오프닝(섹션 1) 카피는 "스킵존" 금지. 결핍 직격 카피로 바로 쓸 수 있는 문장이어야 한다.
-- 비판한 것은 반드시 즉각 해소하라 (개연성 법칙).
-- 후기는 3개 이내, 핵심 결핍 해소 후기로 한정하라.
-- 화자는 "저" 또는 "저희" 중 하나로 일관되게 가라.
-- 02 포지셔닝의 CV·오프닝 초안·가치더하기를 콘티에 자연스럽게 녹여라.
-- qa_checklist.md 규칙을 위반하지 마라."""
+    입력: 제품 + 01 선택 타겟 + 02 포지셔닝(basis 1개) + 04 상세페이지 콘티(basis 1개).
+    04 콘티의 각 섹션을 이미지 1장 단위 확정 디렉션으로 변환한다.
+    """
+    product_block = json.dumps(_filter_product(product, "04_1", cfg), ensure_ascii=False, indent=2)
+    target_block = json.dumps(target, ensure_ascii=False, indent=2)
+    pos_label = f" (기준: {positioning_basis})" if positioning_basis else ""
+    det_label = f" (기준: {detail_basis})" if detail_basis else ""
+    template = load_instruction("image_direction")
+    return (
+        template
+        .replace("{product}", product_block)
+        .replace("{target}", target_block)
+        .replace("{positioning_basis_label}", pos_label)
+        .replace("{positioning}", positioning_text)
+        .replace("{detail_basis_label}", det_label)
+        .replace("{detail}", detail_text)
+    )
 
 
 def build_user_input_03(
@@ -189,82 +215,32 @@ def build_user_input_03(
       - "제품명": 이 제품 하나의 고유 이름. 상표권 등록 대상.
       - "브랜드명": 회사·라인의 우산 이름. 여러 제품을 묶는 상위 정체성.
     각 분류는 사고 결이 달라 한 번 호출에 한 분류만 깊이 있게 다룬다.
+    템플릿은 instruction_{naming_type}.md에서 로드.
     """
     product_block = json.dumps(_filter_product(product, "03", cfg), ensure_ascii=False, indent=2)
     target_block = json.dumps(target, ensure_ascii=False, indent=2)
     pos_label = f" (기준: {positioning_basis})" if positioning_basis else ""
 
-    sections = [
-        f"이번 호출의 분류는 **{naming_type}**이다. 이 분류만 깊이 있게 다루고,",
-        "다른 분류(블로그 제목·스마트스토어 상품명 등)의 후보는 출력하지 말 것.",
-        "",
-        "[제품 정보]",
-        product_block,
-        "",
-        "[01에서 확정된 타겟]",
-        target_block,
-        "",
-        f"[02 포지셔닝 결과{pos_label}]",
-        positioning_text,
-    ]
+    detail_section = ""
     if detail_text.strip():
         det_label = f" (기준: {detail_basis})" if detail_basis else ""
-        sections.extend([
-            "",
-            f"[04 상세페이지 콘티{det_label}]",
-            detail_text,
-        ])
+        detail_section = f"\n\n[04 상세페이지 콘티{det_label}]\n{detail_text}"
+
+    channel_section = ""
     if channel_text.strip():
         ch_label = f" (기준: {channel_basis})" if channel_basis else ""
-        sections.extend([
-            "",
-            f"[05 채널·물길 전략{ch_label}]",
-            channel_text,
-        ])
+        channel_section = f"\n\n[05 채널·물길 전략{ch_label}]\n{channel_text}"
 
-    # 공통 지시
-    common = [
-        "",
-        "[공통 지시]",
-        "- core.md 출력 형식을 엄수하되, 분류 칸은 위에서 지정한 단일 분류로 고정하라.",
-        "- 후보는 5개 이상 제시하고, 서로 구분되는 전략(위치·부위형 / CV 직결형 / 타겟 지목형 / 가치 더하기형 등)으로 다양화하라.",
-        "- 신규 진입 제품은 무조건 유형 2(포지셔닝 중심). 유형 1(브랜드 파워 의존)은 금지.",
-        "- 후보의 '타겟 언어 반영' 컬럼은 02 포지셔닝의 CV·오프닝 카피, (있다면) 05 채널의 허브·세부 키워드를 근거로만 채워라. 임의 단어 금지.",
-        "- qa_checklist.md 규칙을 위반하지 마라.",
-    ]
-    sections.extend(common)
-
-    # 분류별 강조
-    if naming_type == "제품명":
-        sections.extend([
-            "",
-            "[제품명 추가 지시]",
-            "- 목표는 **상표권 등록 가능한 단일 단어 또는 짧은 합성어/신조어**다 (키미테, 하나로, 탑블로, 돼지코팩, 가그린 패턴).",
-            "- 검색 SEO형 긴 문장(예: '뒤집혀도 달리는 어린이 RC카 양면주행 360도회전…')은 절대 금지. 그건 오픈마켓 상품명·블로그 제목 영역이다.",
-            "- 발음 용이성·기억 용이성·연상 명확성을 모든 후보에서 검토하라.",
-            "- 시리즈 확장 가능 구조면 반드시 명시하라 (눈엔 → 무릎엔 → 두피열엔 패턴).",
-            "- 출력 마지막에 **[사용자 직접 검증 항목]** 섹션을 추가하라:",
-            "    1) KIPRIS(키프리스) 상표 검색 — 동일·유사 상표 등록 여부 확인",
-            "    2) 네이버 자동완성·연관검색어 — 후보가 이미 다른 의미로 통용되는지 확인",
-            "    3) 도메인(.com/.kr) 및 SNS 핸들(인스타·유튜브) 가용성",
-            "    4) 외국어 의미 충돌 점검 (의도치 않은 부정적 의미 가능성)",
-        ])
-    elif naming_type == "브랜드명":
-        sections.extend([
-            "",
-            "[브랜드명 추가 지시]",
-            "- 목표는 **여러 제품을 통합할 우산 정체성**이다. 단일 제품 카테고리에 종속되지 않는 확장성을 가져야 한다 (다이슨, 무신사, 배달의민족, 오뚜기 패턴).",
-            "- 후보는 카테고리 의존성을 낮추되, 회사가 추구하는 가치·태도·세계관이 드러나야 한다.",
-            "- 현재 제품(스턴트카 RC 등)에만 잘 맞는 이름이 아니라, **앞으로 출시할 제품 라인업에도 자연스럽게 적용 가능한 이름**이어야 한다.",
-            "- 발음 용이성·기억 용이성·국제 표기 가능성(영문 표기)을 모든 후보에서 검토하라.",
-            "- 출력 마지막에 **[사용자 직접 검증 항목]** 섹션을 추가하라:",
-            "    1) KIPRIS(키프리스) 상표 검색 — 회사·서비스명 등록 여부",
-            "    2) 사업자등록증·법인명 사용 가능성 (한글·영문 표기 모두)",
-            "    3) 도메인 및 SNS 핸들 가용성",
-            "    4) 외국어 의미 충돌 점검",
-            "    5) 추후 출시 가능 제품 카테고리 3~5개 가정 → 각 카테고리에서 이 브랜드명이 자연스러운지 시뮬레이션",
-        ])
-    return "\n".join(sections)
+    template = load_instruction("naming", variant=naming_type)
+    return (
+        template
+        .replace("{product}", product_block)
+        .replace("{target}", target_block)
+        .replace("{positioning_basis_label}", pos_label)
+        .replace("{positioning}", positioning_text)
+        .replace("{detail_section}", detail_section)
+        .replace("{channel_section}", channel_section)
+    )
 
 
 def build_user_input_05(product: dict, target: dict, positioning_text: str,

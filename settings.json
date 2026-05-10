@@ -2,21 +2,31 @@
   "primary_model_00": "claude-sonnet-4-6",
   "compare_model_00": "gemini-2.5-flash",
   "compare_enabled_00": false,
+  "lint_enabled_00": false,
   "primary_model_01": "claude-sonnet-4-6",
   "compare_model_01": "gemini-2.5-pro",
   "compare_enabled_01": false,
+  "lint_enabled_01": true,
   "primary_model_02": "claude-sonnet-4-6",
   "compare_model_02": "gemini-2.5-pro",
   "compare_enabled_02": false,
+  "lint_enabled_02": false,
   "primary_model_03": "claude-sonnet-4-6",
   "compare_model_03": "gemini-2.5-flash",
   "compare_enabled_03": false,
+  "lint_enabled_03": false,
   "primary_model_04": "claude-sonnet-4-6",
   "compare_model_04": "gemini-2.5-flash",
   "compare_enabled_04": false,
+  "lint_enabled_04": true,
+  "primary_model_04_1": "claude-sonnet-4-6",
+  "compare_model_04_1": "gemini-2.5-flash",
+  "compare_enabled_04_1": false,
+  "lint_enabled_04_1": false,
   "primary_model_05": "claude-sonnet-4-6",
   "compare_model_05": "gemini-2.5-flash",
   "compare_enabled_05": false,
+  "lint_enabled_05": false,
   "excluded_fields_00": [
     "재고",
     "판매자메모",
@@ -52,6 +62,13 @@
     "검수메모",
     "엠군상태"
   ],
+  "excluded_fields_04_1": [
+    "재고",
+    "판매자메모",
+    "검수완료",
+    "검수메모",
+    "엠군상태"
+  ],
   "excluded_fields_05": [
     "재고",
     "판매자메모",
@@ -59,9 +76,15 @@
     "검수메모",
     "엠군상태"
   ],
-  "판매자특성": [
+  "판매자특성_활용": [
     "완전포장제품 - 육안으로 외형검수(파손/불량 등) 후 발송",
     "개봉가능포장제품 - 개봉 후 직접 검수(테스트) 후 발송",
-    "친환경 포장 (주변 상권 연계 A급 박스 재활용)"
+    "친환경 포장 (주변 상권 연계 A급 박스 재활용)",
+    "100% 환불 보장 상품",
+    "무료 배송"
+  ],
+  "판매자특성_메모": [
+    "검수 무조건 해야함",
+    "검수 가급적 해야함"
   ]
 }

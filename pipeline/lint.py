@@ -22,11 +22,12 @@ from .llm import generate_claude, generate_gemini
 AGENTS_DIR = Path(__file__).parent.parent / "agents"
 
 AGENT_SLUG = {
-    "deficit_target": "01_deficit_target",
-    "positioning":    "02_positioning",
-    "naming":         "03_naming",
-    "detail_page":    "04_detail_page",
-    "channel":        "05_channel",
+    "deficit_target":  "01_deficit_target",
+    "positioning":     "02_positioning",
+    "naming":          "03_naming",
+    "detail_page":     "04_detail_page",
+    "image_direction": "04_1_image_direction",
+    "channel":         "05_channel",
 }
 
 
@@ -58,9 +59,11 @@ def _build_lint_system_prompt(agent: str) -> str:
   - `[STATUS] WARN:N`         약함·애매·개선 여지 N건 (위반은 아님)
   - `[STATUS] FAIL:N`         사실 비약·데이터 권위 위반·규약 명시 위반 N건
 
-둘째 줄부터: 항목별 마크다운 리스트
-  - 각 항목 형식: `- [규칙ID 또는 D-ID] (위반|주의) 한 줄 설명. 인용: "..."`
-  - 인용은 검수 대상 출력에서 그대로 발췌 (창작 금지)
+둘째 줄부터 — **STATUS와 무관하게 항상 출력** (검토 흔적 가시화):
+  - 검수 기준 파일에 있는 모든 규칙ID(R-01, R-02 ... / D-01 ...)에 대해 각각 한 줄
+  - 형식: `- [규칙ID] (PASS|WARN|FAIL) 한 줄 평가 (WARN/FAIL이면 인용: "...")`
+  - PASS 항목도 "무엇을 어떻게 확인했는지" 한 줄 명시 (단순 "통과"만은 금지)
+  - WARN/FAIL 인용은 검수 대상에서 그대로 발췌, 창작 금지
 
 [판단 원칙]
 - FAIL: data_contract 위반(가격·인증 권위 무시 등), 사실 비약, qa_checklist 명시 항목 위반
@@ -83,7 +86,7 @@ def _lint_one(agent: str, output_text: str, reviewer: str,
     user_input = f"[검수 대상 출력]\n{output_text}"
 
     if reviewer == "claude":
-        return generate_claude(system_prompt, user_input, max_tokens=2048,
+        return generate_claude(system_prompt, user_input, max_tokens=4096,
                                model=claude_model)
     if reviewer == "gemini":
         return generate_gemini(system_prompt, user_input, model=gemini_model)

@@ -91,13 +91,17 @@ def generate_gemini(
     system_prompt: str,
     user_input: str,
     model: str | None = None,
+    max_output_tokens: int | None = None,
 ) -> str:
     from google.genai import types
     client = _gemini_client()
+    config_kwargs: dict = {"system_instruction": system_prompt}
+    if max_output_tokens is not None:
+        config_kwargs["max_output_tokens"] = max_output_tokens
     resp = client.models.generate_content(
         model=model or _gemini_model(),
         contents=[user_input],
-        config=types.GenerateContentConfig(system_instruction=system_prompt),
+        config=types.GenerateContentConfig(**config_kwargs),
     )
     return resp.text or ""
 
@@ -340,12 +344,18 @@ def generate_both(
     user_input: str,
     claude_model: str | None = None,
     gemini_model: str | None = None,
+    max_tokens: int = 8192,
 ) -> dict[str, str]:
-    """Claude/Gemini 병렬 호출. 모델이 None이면 해당 family는 호출 생략 (빈 문자열)."""
+    """Claude/Gemini 병렬 호출. 모델이 None이면 해당 family는 호출 생략 (빈 문자열).
+
+    max_tokens: Claude의 max_tokens 및 Gemini의 max_output_tokens에 동일하게 적용.
+                기본 8192. 출력 길이가 매우 긴 단계(예: 04-1 이미지 디렉션 7섹션+JSON)는
+                호출자가 더 큰 값(16384, 32000 등)을 명시한다.
+    """
     results: dict[str, str] = {"claude": "", "gemini": ""}
     with ThreadPoolExecutor(max_workers=2) as ex:
-        fut_c = ex.submit(generate_claude, system_prompt, user_input, 8192, claude_model) if claude_model else None
-        fut_g = ex.submit(generate_gemini, system_prompt, user_input, gemini_model) if gemini_model else None
+        fut_c = ex.submit(generate_claude, system_prompt, user_input, max_tokens, claude_model) if claude_model else None
+        fut_g = ex.submit(generate_gemini, system_prompt, user_input, gemini_model, max_tokens) if gemini_model else None
         if fut_c is not None:
             try:
                 results["claude"] = fut_c.result()

@@ -14,18 +14,30 @@ import re
 
 import streamlit as st
 
+from pipeline.auto_pipeline import (
+    _extract_sections_json,
+    run_stage_01 as auto_run_01,
+    run_stage_02 as auto_run_02,
+    run_stage_04 as auto_run_04,
+    run_stage_04_1 as auto_run_04_1,
+    run_stage_05 as auto_run_05,
+)
 from pipeline.lint import cross_lint_both, parse_lint_status
 from pipeline.llm import generate_both
+from pipeline.models_config import family_of
 from pipeline.sections import regenerate_section, replace_section, split_sections
 from pipeline.loader import (
     build_user_input_01,
     build_user_input_02,
     build_user_input_04,
+    build_user_input_04_1,
     build_user_input_05,
     load_agent_prompt,
 )
 from pipeline.settings import (
     caption_for_stage,
+    lint_enabled_for_stage,
+    lint_models_for_stage,
     load as load_settings,
     model_for_family,
     models_for_stage,
@@ -116,17 +128,21 @@ def _model_header(
     emoji_label: str,
     model_id: str,
     lint_status: tuple[str, int] | None = None,
+    lint_enabled: bool = True,
 ) -> str:
     """결과 박스 헤더 한 줄. 모델명 + 검증 상태 표기.
 
-    lint_status 없음 → "외부 린터 ✗" (미실행)
+    lint_enabled=False → "외부 린터 OFF (설정에서 켜기)" — 의도적으로 꺼둔 상태
+    lint_enabled=True인데 lint_status 없음 → "외부 린터 ✗ 미실행" — 비정상
     lint_status (PASS, _) → "외부 린터 ✓ 통과"
     lint_status (WARN, N) → "외부 린터 ⚠️ N건 주의"
     lint_status (FAIL, N) → "외부 린터 ❌ N건 위반"
     lint_status (ERROR/UNKNOWN, _) → "외부 린터 ⚙️ 오류"
     """
-    if lint_status is None:
-        lint_part = "외부 린터 ✗"
+    if not lint_enabled:
+        lint_part = "외부 린터 OFF (⚙️ 설정에서 켜기)"
+    elif lint_status is None:
+        lint_part = "외부 린터 ✗ 미실행"
     else:
         status, count = lint_status
         if status == "PASS":
@@ -166,6 +182,56 @@ def _compare_off_caption(claude_model: str | None, gemini_model: str | None) -> 
     """비교 모델 off일 때 단일 family 안내문."""
     if not (claude_model and gemini_model):
         st.caption("ℹ️ 비교 모델 off — 주 사용 모델 결과만 표시합니다.")
+
+
+_STAGE_FULL_NAMES: dict[str, str] = {
+    "01": "01 결핍·타겟",
+    "02": "02 포지셔닝",
+    "04": "04 상세페이지",
+    "04_1": "04-1 이미지 디렉션",
+    "05": "05 채널",
+}
+
+_FAMILY_DISPLAY: dict[str, str] = {"claude": "Claude", "gemini": "Gemini"}
+
+
+def _stage_models_display(stage: str, cfg: dict) -> str:
+    """단계별 '주 작업 Claude, 검수 Gemini' 또는 'Claude' 형식 반환.
+
+    - 비교 모델 켜져 있고 family 다르면 두 모델 모두 표기 (주 + 검수).
+    - 비교 off거나 같은 family면 주 모델만 표기.
+    """
+    primary = cfg.get(f"primary_model_{stage}")
+    compare = cfg.get(f"compare_model_{stage}")
+    enabled = bool(cfg.get(f"compare_enabled_{stage}", True))
+
+    if not primary:
+        return ""
+
+    pf = family_of(primary)
+    primary_disp = _FAMILY_DISPLAY.get(pf, primary)
+
+    if enabled and compare:
+        cf = family_of(compare)
+        if cf != pf:
+            compare_disp = _FAMILY_DISPLAY.get(cf, compare)
+            return f"주 작업 {primary_disp}, 검수 {compare_disp}"
+
+    return primary_disp
+
+
+def _stage_action_label(stage: str, cfg: dict) -> str:
+    """버튼 라벨: '🚀 02 포지셔닝 실행 (주 작업 Claude, 검수 Gemini)'."""
+    name = _STAGE_FULL_NAMES.get(stage, stage)
+    models = _stage_models_display(stage, cfg)
+    return f"🚀 {name} 실행 ({models})" if models else f"🚀 {name} 실행"
+
+
+def _stage_spinner_label(stage: str, cfg: dict) -> str:
+    """스피너 텍스트: '02 포지셔닝 생성 중… (주 작업 Claude, 검수 Gemini)'."""
+    name = _STAGE_FULL_NAMES.get(stage, stage)
+    models = _stage_models_display(stage, cfg)
+    return f"{name} 생성 중… ({models})" if models else f"{name} 생성 중…"
 
 
 def _section_edit_ui(
@@ -228,8 +294,142 @@ cfg = load_settings()
 claude_model_01, gemini_model_01 = models_for_stage("01", cfg)
 claude_model_02, gemini_model_02 = models_for_stage("02", cfg)
 claude_model_04, gemini_model_04 = models_for_stage("04", cfg)
+claude_model_04_1, gemini_model_04_1 = models_for_stage("04_1", cfg)
 claude_model_05, gemini_model_05 = models_for_stage("05", cfg)
+
+
+def _lint_pair(stage: str) -> tuple[str | None, str | None]:
+    """단계별 린터용 (claude_model, gemini_model). 린터 off면 (None, None)."""
+    if not lint_enabled_for_stage(stage, cfg):
+        return (None, None)
+    return lint_models_for_stage(stage, cfg)
+
+
+lint_c_01, lint_g_01 = _lint_pair("01")
+lint_c_02, lint_g_02 = _lint_pair("02")
+lint_c_04, lint_g_04 = _lint_pair("04")
+lint_c_04_1, lint_g_04_1 = _lint_pair("04_1")
+lint_c_05, lint_g_05 = _lint_pair("05")
+
 storage = get_storage()
+
+
+def _ts_kst(ts: str) -> str:
+    """UTC ISO 타임스탬프 → KST(+9h) 표시 문자열."""
+    if not ts:
+        return ""
+    from datetime import datetime, timezone, timedelta
+    _KST = timezone(timedelta(hours=9))
+    try:
+        raw = ts.strip()
+        # psycopg2/supabase 반환 형식 정규화
+        raw = raw.replace(" ", "T")
+        if not raw.endswith(("Z", "+00:00")) and "+" not in raw[10:] and raw[-6] != "+":
+            raw += "+00:00"
+        raw = raw.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(raw[:26] + "+00:00" if len(raw) < 20 else raw)
+        return dt.astimezone(_KST).strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return ts[:19].replace("T", " ")
+
+
+def _version_history_ui(
+    stage: str,
+    builder: str,
+    target_db_id: int | None,
+) -> None:
+    """단계별 버전 이력 expander.
+
+    버전이 2개 이상일 때만 표시. 각 행에 [📥 표시] [🗑 삭제] 버튼.
+    - 표시: 그 버전 원본을 ss[stage_key][builder]로 끌어와 화면 본문에 띄움
+            (이후 후속 단계 실행 시 그 버전이 입력으로 사용됨)
+    - 삭제: 확인 후 DB 행 제거. 현재 표시 중이던 버전이면 다음 최신으로 자동 전환.
+
+    stage: "02" | "04" | "05"
+    builder: "claude" | "gemini"
+    """
+    if not target_db_id:
+        return
+
+    if stage == "02":
+        get_versions = storage.get_positioning_versions
+        delete_one = storage.delete_positioning
+        ss_key = "positioning_02"
+    elif stage == "04":
+        get_versions = storage.get_상세페이지_versions
+        delete_one = storage.delete_상세페이지
+        ss_key = "detail_04"
+    elif stage == "04_1":
+        get_versions = storage.get_이미지디렉션_versions
+        delete_one = storage.delete_이미지디렉션
+        ss_key = "image_direction_04_1"
+    elif stage == "05":
+        get_versions = storage.get_채널_versions
+        delete_one = storage.delete_채널
+        ss_key = "channel_05"
+    else:
+        return
+
+    try:
+        versions = get_versions(target_db_id, builder)
+    except Exception as e:
+        st.caption(f"버전 이력 조회 실패: {type(e).__name__}: {e}")
+        return
+
+    if len(versions) <= 1:
+        return  # 버전이 1개 이하면 expander 자체 숨김
+
+    with st.expander(f"📜 버전 히스토리 ({len(versions)}개)", expanded=False):
+        st.caption(
+            "표시 = 그 버전을 본문에 띄우고 후속 단계의 입력으로 사용. "
+            "삭제 = DB에서 영구 제거 (되돌릴 수 없음)."
+        )
+        for i, v in enumerate(versions):
+            ts = _ts_kst(v.get("생성일") or "")
+            ver_label = "최신" if i == 0 else f"v{len(versions) - i}"
+            row_l, row_btn1, row_btn2 = st.columns([4, 1, 1])
+            with row_l:
+                st.markdown(f"**{ver_label}** · {ts}")
+            with row_btn1:
+                if st.button(
+                    "📥 표시",
+                    key=f"vh_show_{stage}_{builder}_{v['id']}",
+                    use_container_width=True,
+                ):
+                    cur = dict(ss.get(ss_key) or {})
+                    cur[builder] = v.get("원본_출력") or ""
+                    ss[ss_key] = cur
+                    ss.pop(f"lint_{stage}", None)  # 린터 캐시 무효화
+                    st.rerun()
+            with row_btn2:
+                confirm_key = f"vh_del_confirm_{stage}_{builder}_{v['id']}"
+                if ss.get(confirm_key):
+                    if st.button(
+                        "확인?",
+                        key=f"vh_del_yes_{stage}_{builder}_{v['id']}",
+                        use_container_width=True,
+                    ):
+                        try:
+                            delete_one(v["id"])
+                            ss.pop(confirm_key, None)
+                            # 현재 화면에 떠 있는 버전을 지운 거라면 다음 최신으로 갱신
+                            cur = dict(ss.get(ss_key) or {})
+                            if cur.get(builder, "") == (v.get("원본_출력") or ""):
+                                remaining = [vv for vv in versions if vv["id"] != v["id"]]
+                                cur[builder] = remaining[0].get("원본_출력") if remaining else ""
+                                ss[ss_key] = cur
+                            ss.pop(f"lint_{stage}", None)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"삭제 실패: {type(e).__name__}: {e}")
+                else:
+                    if st.button(
+                        "🗑 삭제",
+                        key=f"vh_del_{stage}_{builder}_{v['id']}",
+                        use_container_width=True,
+                    ):
+                        ss[confirm_key] = True
+                        st.rerun()
 
 
 def _restore_from_run(run_id: int) -> bool:
@@ -278,6 +478,37 @@ def _restore_from_run(run_id: int) -> bool:
                 detail_04[m] = d.get("원본_출력") or ""
         if any(detail_04.values()):
             ss["detail_04"] = detail_04
+
+        # 04-1 이미지 디렉션 복원
+        direction_rows = storage.get_이미지디렉션(selected_db_id)
+        image_direction_raw: dict[str, str] = {"claude": "", "gemini": ""}
+        image_direction_parsed: dict[str, dict | None] = {"claude": None, "gemini": None}
+        for d in direction_rows:
+            m = d.get("모델")
+            if m in image_direction_raw:
+                image_direction_raw[m] = d.get("원본_출력") or ""
+                # 섹션들/디자인시스템은 JSONB로 직렬화돼 올 수 있음
+                sections = d.get("섹션들")
+                ds = d.get("디자인시스템")
+                if isinstance(sections, str):
+                    try:
+                        sections = json.loads(sections)
+                    except Exception:
+                        sections = None
+                if isinstance(ds, str):
+                    try:
+                        ds = json.loads(ds)
+                    except Exception:
+                        ds = None
+                if sections or ds or d.get("선택_방식"):
+                    image_direction_parsed[m] = {
+                        "sections": sections or [],
+                        "design_system": ds or {},
+                        "selection_method": d.get("선택_방식") or "",
+                    }
+        if any(image_direction_raw.values()):
+            ss["image_direction_04_1"] = image_direction_raw
+            ss["image_direction_04_1_parsed"] = image_direction_parsed
 
         # 05 채널 복원
         channel_rows = storage.get_채널(selected_db_id)
@@ -335,13 +566,387 @@ with st.container(border=True):
 
 st.divider()
 
+# ── 🚀 자동 모드 ─────────────────────────────────────────
+with st.expander("🚀 자동 모드 (논스톱 실행)", expanded=False):
+    st.caption(
+        "01~05를 논스톱으로 돌립니다. 시간이 오래 걸리니 작업시켜놓고 다른 일을 하세요. "
+        "03 네이밍은 분기·DB 구조가 달라 별도 페이지에서 수동 진행합니다."
+    )
+
+    auto_mode = st.radio(
+        "타겟 모드",
+        options=["추천 #1 자동", "멀티 타겟 자동"],
+        horizontal=True,
+        key="auto_mode",
+        help=(
+            "추천 #1 자동: 01부터 자동 실행 → 추천 타겟 #1 자동 선택 → 체크된 단계.\n"
+            "멀티 타겟 자동: 01을 먼저 수동 실행 → 타겟 다중 체크 → 각 타겟별 체크된 단계."
+        ),
+    )
+
+    st.markdown("**실행 단계**")
+    cols_stage = st.columns(4)
+    with cols_stage[0]:
+        auto_do_02 = st.checkbox("02 포지셔닝", value=True, key="auto_do_02")
+    with cols_stage[1]:
+        auto_do_04 = st.checkbox("04 상세페이지", value=True, key="auto_do_04")
+    with cols_stage[2]:
+        auto_do_04_1 = st.checkbox(
+            "04-1 이미지 디렉션", value=False, key="auto_do_04_1",
+            help="04 콘티가 있어야 실행됩니다. 04를 함께 체크하거나 기존 04 결과가 있어야 합니다."
+        )
+    with cols_stage[3]:
+        auto_do_05 = st.checkbox("05 채널", value=True, key="auto_do_05")
+
+    if auto_mode == "추천 #1 자동":
+        st.caption("01 자동 실행 후 결과 JSON에서 `recommended_rank` 타겟을 자동 선택합니다.")
+        if st.button(
+            "🚀 추천 모드 자동 실행",
+            type="primary",
+            use_container_width=True,
+            key="auto_recommend_btn",
+        ):
+            ss["_auto_trigger"] = "recommend"
+            ss["_auto_stages"] = {
+                "02": auto_do_02, "04": auto_do_04,
+                "04_1": auto_do_04_1, "05": auto_do_05,
+            }
+            st.rerun()
+    else:
+        # 멀티 타겟 모드 — 01이 이미 실행돼 있어야 함
+        _existing_parsed = ss.get("parsed_with_ids") or {}
+        _has_targets = bool(_existing_parsed.get("claude") or _existing_parsed.get("gemini"))
+        if not _has_targets:
+            st.warning("⚠️ 멀티 타겟 모드는 먼저 **아래에서 01을 수동 실행**해 타겟 목록을 확보하세요.")
+        else:
+            available_basis = [
+                m for m in ("claude", "gemini")
+                if (_existing_parsed.get(m) or [])
+            ]
+            if len(available_basis) >= 2:
+                multi_basis = st.radio(
+                    "타겟 출처 모델",
+                    options=available_basis,
+                    horizontal=True,
+                    format_func=lambda x: {"claude": "🟠 Claude", "gemini": "🔵 Gemini"}[x],
+                    key="auto_multi_basis",
+                )
+            else:
+                multi_basis = available_basis[0]
+                st.caption(f"타겟 출처: **{multi_basis}** (다른 모델 결과 없음)")
+
+            target_options: list[dict] = _existing_parsed.get(multi_basis) or []
+            if target_options:
+                def _fmt_multi(t: dict) -> str:
+                    star = "⭐ " if t.get("is_recommended") else ""
+                    return f"{star}#{t.get('rank')} · {t.get('label', '(라벨 없음)')}"
+
+                multi_selected = st.multiselect(
+                    "처리할 타겟 (다중 선택)",
+                    options=target_options,
+                    format_func=_fmt_multi,
+                    key="auto_multi_targets",
+                )
+                if st.button(
+                    f"🚀 멀티 타겟 자동 실행 ({len(multi_selected)}개 타겟)",
+                    type="primary",
+                    use_container_width=True,
+                    disabled=not multi_selected,
+                    key="auto_multi_btn",
+                ):
+                    ss["_auto_trigger"] = "multi"
+                    ss["_auto_stages"] = {
+                        "02": auto_do_02, "04": auto_do_04,
+                        "04_1": auto_do_04_1, "05": auto_do_05,
+                    }
+                    ss["_auto_multi_basis"] = multi_basis
+                    ss["_auto_multi_targets"] = multi_selected
+                    st.rerun()
+
+
+# ── 자동 모드 실행 트리거 처리 ────────────────────────────
+def _populate_ss_from_stage_01(result: dict) -> None:
+    ss["targets_01"] = result["raw"]
+    ss["lint_01"] = result["lint"]
+    ss["parsed_with_ids"] = result["parsed_with_ids"]
+    ss["current_run_id"] = result["run_id"]
+    ss["_run_loaded"] = result["run_id"]
+    for k in ("positioning_02", "saved_run_id", "selected_target_db_id",
+              "detail_04", "image_direction_04_1",
+              "image_direction_04_1_parsed", "channel_05",
+              "lint_02", "lint_04", "lint_04_1", "lint_05",
+              "positioning_02_ver",
+              "detail_04_ver", "image_direction_04_1_ver", "channel_05_ver",
+              "detail_04_based_on_ver",
+              "image_direction_04_1_based_on_ver",
+              "channel_05_based_on_ver",
+              "_sec_regen_02", "_sec_regen_04", "_sec_regen_05"):
+        ss.pop(k, None)
+
+
+def _populate_ss_from_stage_02(result: dict, target_db_id: int, run_id: int) -> None:
+    ss["positioning_02"] = result["raw"]
+    ss["lint_02"] = result["lint"]
+    ss["positioning_02_ver"] = ss.get("positioning_02_ver", 0) + 1
+    ss["selected_target_db_id"] = target_db_id
+    ss["saved_run_id"] = run_id
+
+
+def _populate_ss_from_stage_04(result: dict) -> None:
+    ss["detail_04"] = result["raw"]
+    ss["lint_04"] = result["lint"]
+    ss["detail_04_based_on_ver"] = ss.get("positioning_02_ver", 0)
+    ss["detail_04_ver"] = ss.get("detail_04_ver", 0) + 1
+
+
+def _populate_ss_from_stage_04_1(result: dict) -> None:
+    ss["image_direction_04_1"] = result["raw"]
+    ss["lint_04_1"] = result["lint"]
+    ss["image_direction_04_1_parsed"] = result.get("parsed") or {"claude": None, "gemini": None}
+    ss["image_direction_04_1_based_on_ver"] = ss.get("detail_04_ver", 0)
+    ss["image_direction_04_1_ver"] = ss.get("image_direction_04_1_ver", 0) + 1
+
+
+def _populate_ss_from_stage_05(result: dict) -> None:
+    ss["channel_05"] = result["raw"]
+    ss["lint_05"] = result["lint"]
+    ss["channel_05_based_on_ver"] = ss.get("positioning_02_ver", 0)
+
+
+_auto_trigger = ss.pop("_auto_trigger", None)
+_auto_stages = ss.pop("_auto_stages", {"02": True, "04": True, "05": True})
+
+if _auto_trigger == "recommend":
+    with st.status("🚀 추천 모드 자동 실행 중…", expanded=True) as status:
+        try:
+            # 01
+            st.write("▶ 01 결핍·타겟 실행 중…")
+            r01 = auto_run_01(
+                spec, storage, claude_model_01, gemini_model_01,
+                lint_claude_model=lint_c_01, lint_gemini_model=lint_g_01,
+            )
+            _populate_ss_from_stage_01(r01)
+            st.write(f"✅ 01 완료 (실행_id={r01['run_id']})")
+
+            # 추천 타겟 추출 (claude 우선, 없으면 gemini)
+            rec_target = None
+            rec_basis = None
+            for m in ("claude", "gemini"):
+                for t in r01["parsed_with_ids"].get(m, []):
+                    if t.get("is_recommended"):
+                        rec_target = t
+                        rec_basis = m
+                        break
+                if rec_target:
+                    break
+
+            if not rec_target:
+                # 추천 표시가 없으면 첫 번째 타겟을 fallback으로 사용
+                for m in ("claude", "gemini"):
+                    if r01["parsed_with_ids"].get(m):
+                        rec_target = r01["parsed_with_ids"][m][0]
+                        rec_basis = m
+                        st.write(f"⚠️ 추천 타겟이 표시되지 않아 #{rec_target.get('rank')} 타겟으로 진행합니다.")
+                        break
+
+            if not rec_target:
+                status.update(label="❌ 자동 실행 실패 — 01에서 타겟 추출 불가", state="error")
+                st.stop()
+
+            target_db_id = rec_target["db_id"]
+            target_label = rec_target.get("label") or ""
+            st.write(f"⭐ 추천 타겟 자동 선택: #{rec_target.get('rank')} · {target_label}")
+
+            # 02
+            if _auto_stages.get("02"):
+                st.write("▶ 02 포지셔닝 실행 중…")
+                r02 = auto_run_02(
+                    spec, rec_target, rec_basis, storage,
+                    target_db_id, r01["run_id"],
+                    claude_model_02, gemini_model_02,
+                    lint_claude_model=lint_c_02, lint_gemini_model=lint_g_02,
+                )
+                _populate_ss_from_stage_02(r02, target_db_id, r01["run_id"])
+                st.write("✅ 02 완료")
+
+            # 04
+            if _auto_stages.get("04"):
+                pos_text = ""
+                if ss.get("positioning_02"):
+                    pos_text = ss["positioning_02"].get(rec_basis) or ""
+                if not pos_text:
+                    st.write("⚠️ 04 스킵 — 02 결과 없음 (02를 함께 체크하지 않은 경우)")
+                else:
+                    st.write("▶ 04 상세페이지 실행 중…")
+                    ss["basis_04"] = rec_basis
+                    r04 = auto_run_04(
+                        spec, rec_target, pos_text, rec_basis, storage,
+                        target_db_id, claude_model_04, gemini_model_04,
+                        lint_claude_model=lint_c_04, lint_gemini_model=lint_g_04,
+                    )
+                    _populate_ss_from_stage_04(r04)
+                    st.write("✅ 04 완료")
+
+            # 04-1 이미지 디렉션
+            if _auto_stages.get("04_1"):
+                pos_text = ""
+                if ss.get("positioning_02"):
+                    pos_text = ss["positioning_02"].get(rec_basis) or ""
+                detail_text = ""
+                if ss.get("detail_04"):
+                    detail_text = ss["detail_04"].get(rec_basis) or ""
+                if not detail_text:
+                    st.write("⚠️ 04-1 스킵 — 04 결과 없음 (04를 함께 체크하지 않았거나 04 결과가 비어있음)")
+                elif not pos_text:
+                    st.write("⚠️ 04-1 스킵 — 02 결과 없음")
+                else:
+                    st.write("▶ 04-1 이미지 디렉션 실행 중…")
+                    ss["basis_04_1"] = rec_basis
+                    r04_1 = auto_run_04_1(
+                        spec, rec_target, pos_text, rec_basis,
+                        detail_text, rec_basis, storage,
+                        target_db_id, claude_model_04_1, gemini_model_04_1,
+                        lint_claude_model=lint_c_04_1, lint_gemini_model=lint_g_04_1,
+                    )
+                    _populate_ss_from_stage_04_1(r04_1)
+                    st.write("✅ 04-1 완료")
+
+            # 05
+            if _auto_stages.get("05"):
+                pos_text = ""
+                if ss.get("positioning_02"):
+                    pos_text = ss["positioning_02"].get(rec_basis) or ""
+                if not pos_text:
+                    st.write("⚠️ 05 스킵 — 02 결과 없음 (02를 함께 체크하지 않은 경우)")
+                else:
+                    st.write("▶ 05 채널·물길 실행 중…")
+                    ss["basis_05"] = rec_basis
+                    r05 = auto_run_05(
+                        spec, rec_target, pos_text, rec_basis, storage,
+                        target_db_id, claude_model_05, gemini_model_05,
+                        lint_claude_model=lint_c_05, lint_gemini_model=lint_g_05,
+                    )
+                    _populate_ss_from_stage_05(r05)
+                    st.write("✅ 05 완료")
+
+            status.update(label="🎉 추천 모드 자동 실행 완료", state="complete")
+        except Exception as e:
+            status.update(label=f"❌ 자동 실행 실패: {type(e).__name__}", state="error")
+            st.error(f"{type(e).__name__}: {e}")
+
+elif _auto_trigger == "multi":
+    multi_targets: list[dict] = ss.pop("_auto_multi_targets", [])
+    multi_basis: str = ss.pop("_auto_multi_basis", "claude")
+    run_id = ss.get("current_run_id")
+
+    if not run_id:
+        st.error("❌ current_run_id가 없습니다. 01을 먼저 실행하세요.")
+    elif not multi_targets:
+        st.error("❌ 선택된 타겟이 없습니다.")
+    else:
+        with st.status(
+            f"🚀 멀티 타겟 자동 실행 중… ({len(multi_targets)}개)",
+            expanded=True,
+        ) as status:
+            last_target = None
+            try:
+                for idx, tgt in enumerate(multi_targets, 1):
+                    target_db_id = tgt["db_id"]
+                    target_label = tgt.get("label") or ""
+                    st.write(f"━━ [{idx}/{len(multi_targets)}] #{tgt.get('rank')} · {target_label} ━━")
+
+                    if _auto_stages.get("02"):
+                        st.write("▶ 02 포지셔닝…")
+                        r02 = auto_run_02(
+                            spec, tgt, multi_basis, storage,
+                            target_db_id, run_id,
+                            claude_model_02, gemini_model_02,
+                            lint_claude_model=lint_c_02, lint_gemini_model=lint_g_02,
+                        )
+                        _populate_ss_from_stage_02(r02, target_db_id, run_id)
+                        last_pos = r02["raw"]
+                        st.write("✅ 02 완료")
+                    else:
+                        last_pos = ss.get("positioning_02") or {}
+
+                    last_detail: dict[str, str] = {}
+                    if _auto_stages.get("04"):
+                        pos_text = last_pos.get(multi_basis) or ""
+                        if not pos_text:
+                            st.write("⚠️ 04 스킵 — 02 결과 없음")
+                        else:
+                            st.write("▶ 04 상세페이지…")
+                            ss["basis_04"] = multi_basis
+                            r04 = auto_run_04(
+                                spec, tgt, pos_text, multi_basis, storage,
+                                target_db_id, claude_model_04, gemini_model_04,
+                                lint_claude_model=lint_c_04, lint_gemini_model=lint_g_04,
+                            )
+                            _populate_ss_from_stage_04(r04)
+                            last_detail = r04["raw"]
+                            st.write("✅ 04 완료")
+                    else:
+                        last_detail = ss.get("detail_04") or {}
+
+                    if _auto_stages.get("04_1"):
+                        pos_text = last_pos.get(multi_basis) or ""
+                        detail_text = last_detail.get(multi_basis) or ""
+                        if not detail_text:
+                            st.write("⚠️ 04-1 스킵 — 04 결과 없음")
+                        elif not pos_text:
+                            st.write("⚠️ 04-1 스킵 — 02 결과 없음")
+                        else:
+                            st.write("▶ 04-1 이미지 디렉션…")
+                            ss["basis_04_1"] = multi_basis
+                            r04_1 = auto_run_04_1(
+                                spec, tgt, pos_text, multi_basis,
+                                detail_text, multi_basis, storage,
+                                target_db_id, claude_model_04_1, gemini_model_04_1,
+                                lint_claude_model=lint_c_04_1, lint_gemini_model=lint_g_04_1,
+                            )
+                            _populate_ss_from_stage_04_1(r04_1)
+                            st.write("✅ 04-1 완료")
+
+                    if _auto_stages.get("05"):
+                        pos_text = last_pos.get(multi_basis) or ""
+                        if not pos_text:
+                            st.write("⚠️ 05 스킵 — 02 결과 없음")
+                        else:
+                            st.write("▶ 05 채널·물길…")
+                            ss["basis_05"] = multi_basis
+                            r05 = auto_run_05(
+                                spec, tgt, pos_text, multi_basis, storage,
+                                target_db_id, claude_model_05, gemini_model_05,
+                                lint_claude_model=lint_c_05, lint_gemini_model=lint_g_05,
+                            )
+                            _populate_ss_from_stage_05(r05)
+                            st.write("✅ 05 완료")
+
+                    last_target = tgt
+
+                status.update(
+                    label=f"🎉 멀티 타겟 자동 실행 완료 ({len(multi_targets)}개)",
+                    state="complete",
+                )
+                if last_target:
+                    st.info(
+                        f"마지막으로 처리한 타겟 **#{last_target.get('rank')} · "
+                        f"{last_target.get('label', '')}**의 결과가 화면에 표시됩니다. "
+                        f"다른 타겟의 결과는 아래 **타겟 선택 라디오에서 해당 타겟을 클릭**하면 "
+                        f"DB에서 자동으로 로드됩니다."
+                    )
+            except Exception as e:
+                status.update(label=f"❌ 자동 실행 실패: {type(e).__name__}", state="error")
+                st.error(f"{type(e).__name__}: {e}")
+
+
 # ── Step B: 01 실행 ─────────────────────────────────────
 st.header("Step 1 · 01 결핍·타겟")
 
 col_run, col_info = st.columns([1, 3])
 with col_run:
     run_01 = st.button(
-        "🚀 01 실행 (Claude + Gemini)",
+        _stage_action_label("01", cfg),
         type="primary",
         use_container_width=True,
     )
@@ -356,7 +961,7 @@ if run_01:
         st.error(f"프롬프트 로드 실패: {type(e).__name__}: {e}")
         st.stop()
 
-    with st.spinner("Claude + Gemini 호출 중…"):
+    with st.spinner(_stage_spinner_label("01", cfg)):
         targets_01 = generate_both(
             system_prompt, user_input,
             claude_model=claude_model_01,
@@ -364,14 +969,17 @@ if run_01:
         )
     ss["targets_01"] = targets_01
 
-    with st.spinner("교차 린터 검수 중…"):
-        ss["lint_01"] = cross_lint_both(
-            "deficit_target",
-            targets_01.get("claude", ""),
-            targets_01.get("gemini", ""),
-            claude_model=claude_model_01,
-            gemini_model=gemini_model_01,
-        )
+    if lint_c_01 or lint_g_01:
+        with st.spinner("교차 린터 검수 중…"):
+            ss["lint_01"] = cross_lint_both(
+                "deficit_target",
+                targets_01.get("claude", ""),
+                targets_01.get("gemini", ""),
+                claude_model=lint_c_01,
+                gemini_model=lint_g_01,
+            )
+    else:
+        ss["lint_01"] = {"claude": "", "gemini": ""}
 
     # 즉시 DB 저장: 새 실행 + 모든 타겟 후보 (모델별)
     try:
@@ -444,7 +1052,10 @@ if targets_01:
     cc, gc = _result_layout(claude_model_01, gemini_model_01)
     if cc is not None:
         with cc:
-            st.markdown(_model_header("🟠 Claude", claude_model_01, lint_c))
+            st.markdown(_model_header(
+                "🟠 Claude", claude_model_01, lint_c,
+                lint_enabled=lint_enabled_for_stage("01", cfg),
+            ))
             st.markdown(md_c or "_(empty)_")
             if lint_text_c:
                 with st.expander(
@@ -457,7 +1068,10 @@ if targets_01:
                     st.code(json_c, language="json")
     if gc is not None:
         with gc:
-            st.markdown(_model_header("🔵 Gemini", gemini_model_01, lint_g))
+            st.markdown(_model_header(
+                "🔵 Gemini", gemini_model_01, lint_g,
+                lint_enabled=lint_enabled_for_stage("01", cfg),
+            ))
             st.markdown(md_g or "_(empty)_")
             if lint_text_g:
                 with st.expander(
@@ -519,12 +1133,38 @@ if targets_01:
         elif rec_rank in ranks:
             default_idx = ranks.index(rec_rank)
 
+        # 타겟별 작업 이력 bulk 조회 (라디오 라벨에 "완료: 02 포지셔닝, ..." 표시용)
+        _STAGE_LABELS_FULL = {
+            "02": "02 포지셔닝",
+            "03": "03 네이밍",
+            "04": "04 상세페이지",
+            "05": "05 채널",
+        }
+        _all_target_ids = [
+            t["db_id"] for t in targets_list
+            if t.get("db_id") is not None
+        ]
+        try:
+            _results_summary = storage.get_result_summary_for_targets(_all_target_ids)
+        except Exception:
+            _results_summary = {}
+
         def _fmt(rank):
             t = next((x for x in targets_list if x.get("rank") == rank), None)
             if not t:
                 return f"#{rank}"
             star = "⭐ " if t.get("is_recommended") else ""
-            return f"{star}#{rank} · {t.get('label', '(라벨 없음)')}"
+            base = f"{star}#{rank} · {t.get('label', '(라벨 없음)')}"
+            stages = _results_summary.get(t.get("db_id")) or set()
+            if stages:
+                ordered = [
+                    _STAGE_LABELS_FULL[s]
+                    for s in ("02", "03", "04", "05")
+                    if s in stages
+                ]
+                if ordered:
+                    return f"{base}    ✅ {', '.join(ordered)}"
+            return base
 
         selected_rank = st.radio(
             "타겟 선택",
@@ -570,6 +1210,59 @@ if targets_01:
             target_text = _build_target_description(selected)
             target_rank = selected.get("rank") or 1
             selected_db_id = selected.get("db_id")
+
+            # 타겟 변경 감지 → 그 타겟의 기존 02/04/05 결과를 DB에서 자동 로드.
+            # 멀티 타겟 자동 모드 후 다른 타겟의 결과를 보려면 이 경로가 필요.
+            if (
+                selected_db_id
+                and ss.get("selected_target_db_id") != selected_db_id
+            ):
+                pos_rows = storage.get_positioning(selected_db_id)
+                pos_loaded: dict[str, str] = {"claude": "", "gemini": ""}
+                for prow in pos_rows:
+                    m = prow.get("모델")
+                    if m in pos_loaded:
+                        pos_loaded[m] = prow.get("원본_출력") or ""
+
+                detail_rows = storage.get_상세페이지(selected_db_id)
+                detail_loaded: dict[str, str] = {"claude": "", "gemini": ""}
+                for d in detail_rows:
+                    m = d.get("모델")
+                    if m in detail_loaded:
+                        detail_loaded[m] = d.get("원본_출력") or ""
+
+                channel_rows = storage.get_채널(selected_db_id)
+                channel_loaded: dict[str, str] = {"claude": "", "gemini": ""}
+                for c in channel_rows:
+                    m = c.get("모델")
+                    if m in channel_loaded:
+                        channel_loaded[m] = c.get("원본_출력") or ""
+
+                if any(pos_loaded.values()):
+                    ss["positioning_02"] = pos_loaded
+                    ss["positioning_02_ver"] = ss.get("positioning_02_ver", 0) + 1
+                else:
+                    ss.pop("positioning_02", None)
+
+                if any(detail_loaded.values()):
+                    ss["detail_04"] = detail_loaded
+                    ss["detail_04_based_on_ver"] = ss.get("positioning_02_ver", 0)
+                else:
+                    ss.pop("detail_04", None)
+
+                if any(channel_loaded.values()):
+                    ss["channel_05"] = channel_loaded
+                    ss["channel_05_based_on_ver"] = ss.get("positioning_02_ver", 0)
+                else:
+                    ss.pop("channel_05", None)
+
+                # 이전 타겟 린터 결과는 무효 — 헤더가 ✗로 표시되도록 비움
+                for k in ("lint_02", "lint_04", "lint_05"):
+                    ss.pop(k, None)
+
+                ss["selected_target_db_id"] = selected_db_id
+                ss["saved_run_id"] = ss.get("current_run_id")
+                st.rerun()
     else:
         st.warning(
             "⚠️ 01 결과에 타겟 카드를 만들 수 없습니다 (JSON 블록 없음). 수동 입력으로 진행하세요."
@@ -587,7 +1280,7 @@ if targets_01:
 
     st.caption(caption_for_stage("02", cfg))
     run_02 = st.button(
-        "🚀 02 실행 (Claude + Gemini)",
+        _stage_action_label("02", cfg),
         type="primary",
         use_container_width=True,
         disabled=not (target_label.strip() and target_text.strip()),
@@ -606,7 +1299,7 @@ if targets_01:
             st.error(f"프롬프트 로드 실패: {type(e).__name__}: {e}")
             st.stop()
 
-        with st.spinner("Claude + Gemini 호출 중…"):
+        with st.spinner(_stage_spinner_label("02", cfg)):
             positioning_02 = generate_both(
                 system_prompt, user_input,
                 claude_model=claude_model_02,
@@ -617,14 +1310,17 @@ if targets_01:
         # 04/05 결과 영역에서 based_on_ver 비교로 ⚠️ 배지 + 재생성 안내.
         ss["positioning_02_ver"] = ss.get("positioning_02_ver", 0) + 1
 
-        with st.spinner("교차 린터 검수 중…"):
-            ss["lint_02"] = cross_lint_both(
-                "positioning",
-                positioning_02.get("claude", ""),
-                positioning_02.get("gemini", ""),
-                claude_model=claude_model_02,
-                gemini_model=gemini_model_02,
-            )
+        if lint_c_02 or lint_g_02:
+            with st.spinner("교차 린터 검수 중…"):
+                ss["lint_02"] = cross_lint_both(
+                    "positioning",
+                    positioning_02.get("claude", ""),
+                    positioning_02.get("gemini", ""),
+                    claude_model=lint_c_02,
+                    gemini_model=lint_g_02,
+                )
+        else:
+            ss["lint_02"] = {"claude": "", "gemini": ""}
 
         try:
             run_id = ss.get("current_run_id")
@@ -732,7 +1428,10 @@ if positioning_02:
     cc2, gc2 = _result_layout(claude_model_02, gemini_model_02)
     if cc2 is not None:
         with cc2:
-            st.markdown(_model_header("🟠 Claude", claude_model_02, lint_c2))
+            st.markdown(_model_header(
+                "🟠 Claude", claude_model_02, lint_c2,
+                lint_enabled=lint_enabled_for_stage("02", cfg),
+            ))
             st.markdown(positioning_02.get("claude") or "_(empty)_")
             if lint_text_c2:
                 with st.expander(
@@ -745,9 +1444,13 @@ if positioning_02:
                 positioning_02.get("claude") or "",
                 "_sec_regen_02",
             )
+            _version_history_ui("02", "claude", ss.get("selected_target_db_id"))
     if gc2 is not None:
         with gc2:
-            st.markdown(_model_header("🔵 Gemini", gemini_model_02, lint_g2))
+            st.markdown(_model_header(
+                "🔵 Gemini", gemini_model_02, lint_g2,
+                lint_enabled=lint_enabled_for_stage("02", cfg),
+            ))
             st.markdown(positioning_02.get("gemini") or "_(empty)_")
             if lint_text_g2:
                 with st.expander(
@@ -760,6 +1463,7 @@ if positioning_02:
                 positioning_02.get("gemini") or "",
                 "_sec_regen_02",
             )
+            _version_history_ui("02", "gemini", ss.get("selected_target_db_id"))
 
     if ss.get("saved_run_id"):
         st.info(
@@ -791,7 +1495,7 @@ if positioning_02 and ss.get("selected_target_db_id"):
     st.caption(caption_for_stage("04", cfg))
     pos_text_for_04 = positioning_02.get(detail_basis) or ""
     run_04 = st.button(
-        "🚀 04 실행 (Claude + Gemini)",
+        _stage_action_label("04", cfg),
         type="primary",
         use_container_width=True,
         disabled=not pos_text_for_04.strip(),
@@ -820,7 +1524,7 @@ if positioning_02 and ss.get("selected_target_db_id"):
             st.error(f"프롬프트 로드 실패: {type(e).__name__}: {e}")
             st.stop()
 
-        with st.spinner("Claude + Gemini 호출 중…"):
+        with st.spinner(_stage_spinner_label("04", cfg)):
             detail_04 = generate_both(
                 system_prompt, user_input,
                 claude_model=claude_model_04,
@@ -829,14 +1533,17 @@ if positioning_02 and ss.get("selected_target_db_id"):
         ss["detail_04"] = detail_04
         ss["detail_04_based_on_ver"] = ss.get("positioning_02_ver", 0)
 
-        with st.spinner("교차 린터 검수 중…"):
-            ss["lint_04"] = cross_lint_both(
-                "detail_page",
-                detail_04.get("claude", ""),
-                detail_04.get("gemini", ""),
-                claude_model=claude_model_04,
-                gemini_model=gemini_model_04,
-            )
+        if lint_c_04 or lint_g_04:
+            with st.spinner("교차 린터 검수 중…"):
+                ss["lint_04"] = cross_lint_both(
+                    "detail_page",
+                    detail_04.get("claude", ""),
+                    detail_04.get("gemini", ""),
+                    claude_model=lint_c_04,
+                    gemini_model=lint_g_04,
+                )
+        else:
+            ss["lint_04"] = {"claude": "", "gemini": ""}
 
         try:
             tid = ss["selected_target_db_id"]
@@ -930,7 +1637,10 @@ if detail_04:
     cc4, gc4 = _result_layout(claude_model_04, gemini_model_04)
     if cc4 is not None:
         with cc4:
-            st.markdown(_model_header("🟠 Claude", claude_model_04, lint_c4))
+            st.markdown(_model_header(
+                "🟠 Claude", claude_model_04, lint_c4,
+                lint_enabled=lint_enabled_for_stage("04", cfg),
+            ))
             st.markdown(detail_04.get("claude") or "_(empty)_")
             if lint_text_c4:
                 with st.expander(
@@ -944,9 +1654,13 @@ if detail_04:
                 "_sec_regen_04",
                 marker_style="bracket",
             )
+            _version_history_ui("04", "claude", ss.get("selected_target_db_id"))
     if gc4 is not None:
         with gc4:
-            st.markdown(_model_header("🔵 Gemini", gemini_model_04, lint_g4))
+            st.markdown(_model_header(
+                "🔵 Gemini", gemini_model_04, lint_g4,
+                lint_enabled=lint_enabled_for_stage("04", cfg),
+            ))
             st.markdown(detail_04.get("gemini") or "_(empty)_")
             if lint_text_g4:
                 with st.expander(
@@ -959,6 +1673,310 @@ if detail_04:
                 detail_04.get("gemini") or "",
                 "_sec_regen_04",
                 marker_style="bracket",
+            )
+            _version_history_ui("04", "gemini", ss.get("selected_target_db_id"))
+
+# ── Step 3-1: 04-1 이미지 디렉션 ───────────────────────────
+detail_04 = ss.get("detail_04")
+if (
+    positioning_02
+    and ss.get("selected_target_db_id")
+    and detail_04
+    and any((detail_04.get(m) or "").strip() for m in ("claude", "gemini"))
+):
+    st.divider()
+    st.header("Step 3-1 · 04-1 이미지 디렉션")
+    st.caption(
+        "콘티(04)의 각 섹션을 이미지 1장 단위 확정 디렉션으로 변환합니다. "
+        "각 섹션마다 GPT Images 2.0에 바로 복붙할 수 있는 영문 프롬프트가 생성됩니다."
+    )
+
+    available_bases_04 = [
+        m for m in ("claude", "gemini")
+        if (detail_04.get(m) or "").strip()
+    ]
+    if len(available_bases_04) >= 2:
+        direction_basis = st.radio(
+            "04-1 입력으로 쓸 04 콘티",
+            options=available_bases_04,
+            horizontal=True,
+            format_func=lambda x: {"claude": "🟠 Claude", "gemini": "🔵 Gemini"}[x],
+            key="basis_04_1",
+        )
+    elif available_bases_04:
+        direction_basis = available_bases_04[0]
+    else:
+        direction_basis = "claude"
+
+    st.caption(caption_for_stage("04_1", cfg))
+    detail_text_for_04_1 = detail_04.get(direction_basis) or ""
+    pos_text_for_04_1 = (positioning_02 or {}).get(direction_basis) or ""
+
+    run_04_1 = st.button(
+        _stage_action_label("04_1", cfg),
+        type="primary",
+        use_container_width=True,
+        disabled=not detail_text_for_04_1.strip(),
+        key="run_04_1",
+    )
+    if ss.pop("_restage_04_1", False):
+        run_04_1 = True
+
+    if run_04_1:
+        sel_target = _find_selected_target_dict(ss["selected_target_db_id"])
+        if not sel_target:
+            st.error("선택된 타겟 정보를 찾을 수 없습니다. 02부터 다시 실행하세요.")
+            st.stop()
+
+        target_dict = {
+            "label": sel_target.get("label") or "",
+            "description": _build_target_description(sel_target),
+        }
+        try:
+            system_prompt = load_agent_prompt("image_direction")
+            user_input = build_user_input_04_1(
+                spec, target_dict, pos_text_for_04_1, detail_text_for_04_1,
+                positioning_basis=direction_basis,
+                detail_basis=direction_basis,
+            )
+        except Exception as e:
+            st.error(f"프롬프트 로드 실패: {type(e).__name__}: {e}")
+            st.stop()
+
+        with st.spinner(_stage_spinner_label("04_1", cfg)):
+            image_direction_04_1 = generate_both(
+                system_prompt, user_input,
+                claude_model=claude_model_04_1,
+                gemini_model=gemini_model_04_1,
+                max_tokens=16384,
+            )
+        ss["image_direction_04_1"] = image_direction_04_1
+        ss["image_direction_04_1_based_on_ver"] = ss.get("detail_04_ver", 0)
+        ss["image_direction_04_1_ver"] = ss.get("image_direction_04_1_ver", 0) + 1
+
+        # 파싱 + 저장
+        parsed_per_model: dict[str, dict | None] = {"claude": None, "gemini": None}
+        for m in ("claude", "gemini"):
+            text = image_direction_04_1.get(m, "") or ""
+            parsed = _extract_sections_json(text)
+            parsed_per_model[m] = parsed
+            sections = (parsed or {}).get("sections")
+            ds = (parsed or {}).get("design_system")
+            sm = (parsed or {}).get("selection_method")
+            try:
+                storage.save_이미지디렉션(
+                    target_id=ss["selected_target_db_id"],
+                    model=m,
+                    raw_output=text,
+                    sections=sections if isinstance(sections, list) else None,
+                    design_system=ds if isinstance(ds, dict) else None,
+                    selection_method=sm if isinstance(sm, str) else None,
+                )
+            except Exception as e:
+                st.error(f"04-1 DB 저장 실패 ({m}): {type(e).__name__}: {e}")
+        ss["image_direction_04_1_parsed"] = parsed_per_model
+
+        if lint_c_04_1 or lint_g_04_1:
+            with st.spinner("교차 린터 검수 중…"):
+                ss["lint_04_1"] = cross_lint_both(
+                    "image_direction",
+                    image_direction_04_1.get("claude", ""),
+                    image_direction_04_1.get("gemini", ""),
+                    claude_model=lint_c_04_1,
+                    gemini_model=lint_g_04_1,
+                )
+        else:
+            ss["lint_04_1"] = {"claude": "", "gemini": ""}
+
+        st.success(f"04-1 저장 완료 (타겟_id={ss['selected_target_db_id']})")
+
+image_direction_04_1 = ss.get("image_direction_04_1")
+lint_04_1 = ss.get("lint_04_1") or {}
+image_direction_parsed = ss.get("image_direction_04_1_parsed") or {}
+
+if image_direction_04_1 and any(image_direction_04_1.values()):
+    is_stale_04_1 = (
+        ss.get("image_direction_04_1_based_on_ver", 0)
+        != ss.get("detail_04_ver", 0)
+    )
+    if is_stale_04_1 and ss.get("detail_04_ver", 0) > 0:
+        col_w, col_b = st.columns([4, 1])
+        with col_w:
+            st.warning("⚠️ 이 04-1 결과는 **이전 04 콘티 기반**입니다. 04가 갱신되었으니 재생성을 권장합니다.")
+        with col_b:
+            if st.button("🔄 04-1 재생성", key="restage_04_1", use_container_width=True):
+                ss["_restage_04_1"] = True
+                st.rerun()
+
+    st.markdown("**04-1 결과 비교**")
+    lint_text_c41 = lint_04_1.get("claude") or ""
+    lint_text_g41 = lint_04_1.get("gemini") or ""
+    lint_c41 = parse_lint_status(lint_text_c41) if lint_text_c41 else None
+    lint_g41 = parse_lint_status(lint_text_g41) if lint_text_g41 else None
+    _compare_off_caption(claude_model_04_1, gemini_model_04_1)
+    cc41, gc41 = _result_layout(claude_model_04_1, gemini_model_04_1)
+
+    def _strip_json_block(text: str) -> str:
+        """---SECTIONS_JSON---...---END_SECTIONS_JSON--- 블록을 제거해 렌더링용 텍스트 반환.
+        닫는 마커가 없으면 시작 마커부터 끝까지 제거."""
+        import re as _re
+        # 1) 닫는 마커까지 블록 전체 제거
+        out = _re.sub(
+            r"---SECTIONS_JSON---.*?---END_SECTIONS_JSON---",
+            "",
+            text,
+            flags=_re.DOTALL,
+        )
+        # 2) 닫는 마커 없이 시작 마커만 남은 경우 — 마커부터 끝까지 제거
+        out = _re.sub(r"---SECTIONS_JSON---.*$", "", out, flags=_re.DOTALL)
+        return out.strip()
+
+    def _build_design_system_copy_block(ds: dict | None) -> str:
+        """디자인 시스템(전역 규칙)만 따로 한국어 마크다운으로 조립.
+        GPT Image 세션 시작 시 1회만 붙여넣는 용도."""
+        if not isinstance(ds, dict) or not ds:
+            return ""
+        lines: list[str] = ["[디자인 시스템 (전역 규칙) — 세션당 1회만 입력]"]
+        cp = ds.get("color_palette") or []
+        if cp:
+            lines.append(f"- 컬러 팔레트: {' / '.join(str(c) for c in cp)}")
+        typo = ds.get("typography") or {}
+        if isinstance(typo, dict):
+            for k, v in typo.items():
+                lines.append(f"- {k} 폰트: {v}")
+        pc = ds.get("people_consistency")
+        if pc:
+            lines.append(f"- 인물 일관성: {pc}")
+        forbidden = ds.get("forbidden") or []
+        if forbidden:
+            lines.append(f"- 전역 금지: {' / '.join(str(f) for f in forbidden)}")
+        return "\n".join(lines)
+
+    def _build_section_copy_block(sec: dict) -> str:
+        """섹션 정보만 GPT Image 복붙용 한국어 마크다운으로 조립.
+        디자인 시스템은 별도 블록(_build_design_system_copy_block)에서 1회만 입력."""
+        lines: list[str] = []
+
+        # 섹션
+        order = sec.get("order")
+        name = sec.get("name") or "(이름 없음)"
+        lines.append(f"[섹션 {order}] {name}")
+
+        canvas = sec.get("canvas") or {}
+        if canvas:
+            wpx = canvas.get("width_px") or canvas.get("size_px") or ""
+            hpx = canvas.get("height_px") or ""
+            ratio = canvas.get("ratio") or ""
+            if wpx and hpx:
+                lines.append(f"- 캔버스: {wpx}x{hpx}" + (f", {ratio}" if ratio else ""))
+            elif wpx:
+                lines.append(f"- 캔버스: {wpx}" + (f", {ratio}" if ratio else ""))
+
+        if sec.get("background"):
+            lines.append(f"- 배경/장면: {sec.get('background')}")
+        if sec.get("composition"):
+            lines.append(f"- 구도: {sec.get('composition')}")
+        if sec.get("mood"):
+            lines.append(f"- 무드: {sec.get('mood')}")
+
+        text_elements = sec.get("text_elements") or []
+        if text_elements:
+            lines.append("- 카피:")
+            for te in text_elements:
+                if not isinstance(te, dict):
+                    continue
+                content = te.get("content") or ""
+                # 카피 내 줄바꿈은 공백으로 치환 — GPT Image가 문맥 보고 알아서 줄바꿈
+                content_oneline = " ".join(content.split())
+                lines.append(f'  · "{content_oneline}"')
+
+        return "\n".join(lines)
+
+    def _render_image_direction_panel(
+        builder: str, builder_label: str, model_id: str | None,
+        lint_status, lint_text: str,
+    ) -> None:
+        st.markdown(_model_header(
+            builder_label, model_id or "", lint_status,
+            lint_enabled=lint_enabled_for_stage("04_1", cfg),
+        ))
+        raw_text = image_direction_04_1.get(builder) or ""
+        parsed = image_direction_parsed.get(builder) or {}
+        sections = parsed.get("sections") if isinstance(parsed, dict) else None
+        ds = parsed.get("design_system") if isinstance(parsed, dict) else None
+        sm = parsed.get("selection_method") if isinstance(parsed, dict) else None
+
+        if sections:
+            if sm:
+                st.caption(f"**선택 방식**: {sm}")
+            if isinstance(ds, dict) and ds:
+                with st.expander("🎨 디자인 시스템 (전역 규칙)", expanded=False):
+                    st.json(ds)
+                ds_copy = _build_design_system_copy_block(ds)
+                if ds_copy:
+                    st.markdown("**📋 GPT Image 복붙용 — 디자인 시스템 (세션당 1회)**")
+                    st.code(ds_copy, language="text")
+                    st.caption("👆 GPT Image 새 세션 시작 시 제품 사진과 함께 1회만 입력하세요. 아래 섹션 블록에는 중복 포함되지 않습니다.")
+            for sec in sections:
+                if not isinstance(sec, dict):
+                    continue
+                order = sec.get("order")
+                name = sec.get("name") or "(이름 없음)"
+                with st.container(border=True):
+                    st.markdown(f"### #{order} · {name}")
+                    canvas = sec.get("canvas") or {}
+                    if canvas:
+                        ratio = canvas.get("ratio") or ""
+                        wpx = canvas.get("width_px") or canvas.get("size_px") or ""
+                        hpx = canvas.get("height_px") or ""
+                        size_str = f"{wpx}x{hpx}" if wpx and hpx else (wpx or "")
+                        st.caption(f"📐 캔버스: {size_str} ({ratio})" if ratio or size_str else "")
+                    if sec.get("composition"):
+                        st.markdown(f"**구도**: {sec.get('composition')}")
+                    if sec.get("background"):
+                        st.markdown(f"**배경**: {sec.get('background')}")
+                    if sec.get("mood"):
+                        st.markdown(f"**무드**: {sec.get('mood')}")
+                    text_elements = sec.get("text_elements") or []
+                    if text_elements:
+                        st.markdown("**확정 카피**")
+                        for te in text_elements:
+                            if not isinstance(te, dict):
+                                continue
+                            role = te.get("role") or ""
+                            content = te.get("content") or ""
+                            meta = f"_{role}_" if role else ""
+                            st.markdown(f"- {meta}<br>**“{content}”**", unsafe_allow_html=True)
+                    if sec.get("design_notes"):
+                        st.markdown(f"**디자인 노트**: {sec.get('design_notes')}")
+                    copy_text = _build_section_copy_block(sec)
+                    if copy_text:
+                        st.markdown("**📋 GPT Image 복붙용 — 섹션 브리프**")
+                        st.code(copy_text, language="text")
+        else:
+            st.caption("⚠️ JSON 블록 파싱 실패 — 원본 출력만 표시합니다.")
+            st.markdown(_strip_json_block(raw_text) or "_(empty)_")
+
+        with st.expander("🧾 원본 출력 보기", expanded=False):
+            st.markdown(_strip_json_block(raw_text) or "_(empty)_")
+
+        if lint_text:
+            with st.expander(
+                f"🔍 {_lint_reviewer_label(builder)} 린터 검수",
+                expanded=lint_status[0] in ("FAIL", "WARN") if lint_status else False,
+            ):
+                st.markdown(lint_text)
+        _version_history_ui("04_1", builder, ss.get("selected_target_db_id"))
+
+    if cc41 is not None:
+        with cc41:
+            _render_image_direction_panel(
+                "claude", "🟠 Claude", claude_model_04_1, lint_c41, lint_text_c41,
+            )
+    if gc41 is not None:
+        with gc41:
+            _render_image_direction_panel(
+                "gemini", "🔵 Gemini", gemini_model_04_1, lint_g41, lint_text_g41,
             )
 
 # ── Step 4: 05 채널·물길 ────────────────────────────────────
@@ -986,7 +2004,7 @@ if positioning_02 and ss.get("selected_target_db_id"):
     st.caption(caption_for_stage("05", cfg))
     pos_text_for_05 = positioning_02.get(channel_basis) or ""
     run_05 = st.button(
-        "🚀 05 실행 (Claude + Gemini)",
+        _stage_action_label("05", cfg),
         type="primary",
         use_container_width=True,
         disabled=not pos_text_for_05.strip(),
@@ -1014,7 +2032,7 @@ if positioning_02 and ss.get("selected_target_db_id"):
             st.error(f"프롬프트 로드 실패: {type(e).__name__}: {e}")
             st.stop()
 
-        with st.spinner("Claude + Gemini 호출 중…"):
+        with st.spinner(_stage_spinner_label("05", cfg)):
             channel_05 = generate_both(
                 system_prompt, user_input,
                 claude_model=claude_model_05,
@@ -1023,14 +2041,17 @@ if positioning_02 and ss.get("selected_target_db_id"):
         ss["channel_05"] = channel_05
         ss["channel_05_based_on_ver"] = ss.get("positioning_02_ver", 0)
 
-        with st.spinner("교차 린터 검수 중…"):
-            ss["lint_05"] = cross_lint_both(
-                "channel",
-                channel_05.get("claude", ""),
-                channel_05.get("gemini", ""),
-                claude_model=claude_model_05,
-                gemini_model=gemini_model_05,
-            )
+        if lint_c_05 or lint_g_05:
+            with st.spinner("교차 린터 검수 중…"):
+                ss["lint_05"] = cross_lint_both(
+                    "channel",
+                    channel_05.get("claude", ""),
+                    channel_05.get("gemini", ""),
+                    claude_model=lint_c_05,
+                    gemini_model=lint_g_05,
+                )
+        else:
+            ss["lint_05"] = {"claude": "", "gemini": ""}
 
         try:
             tid = ss["selected_target_db_id"]
@@ -1124,7 +2145,10 @@ if channel_05:
     cc5, gc5 = _result_layout(claude_model_05, gemini_model_05)
     if cc5 is not None:
         with cc5:
-            st.markdown(_model_header("🟠 Claude", claude_model_05, lint_c5))
+            st.markdown(_model_header(
+                "🟠 Claude", claude_model_05, lint_c5,
+                lint_enabled=lint_enabled_for_stage("05", cfg),
+            ))
             st.markdown(channel_05.get("claude") or "_(empty)_")
             if lint_text_c5:
                 with st.expander(
@@ -1138,9 +2162,13 @@ if channel_05:
                 "_sec_regen_05",
                 marker_style="bracket",
             )
+            _version_history_ui("05", "claude", ss.get("selected_target_db_id"))
     if gc5 is not None:
         with gc5:
-            st.markdown(_model_header("🔵 Gemini", gemini_model_05, lint_g5))
+            st.markdown(_model_header(
+                "🔵 Gemini", gemini_model_05, lint_g5,
+                lint_enabled=lint_enabled_for_stage("05", cfg),
+            ))
             st.markdown(channel_05.get("gemini") or "_(empty)_")
             if lint_text_g5:
                 with st.expander(
@@ -1154,3 +2182,4 @@ if channel_05:
                 "_sec_regen_05",
                 marker_style="bracket",
             )
+            _version_history_ui("05", "gemini", ss.get("selected_target_db_id"))

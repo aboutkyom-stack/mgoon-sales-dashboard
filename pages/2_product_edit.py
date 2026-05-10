@@ -55,7 +55,7 @@ from pipeline.models_config import (
 )
 from pipeline.spec_schema import SPEC_FIELDS
 from pipeline.storage import get_storage
-from pipeline.settings import load_판매자특성
+from pipeline.settings import load_판매자특성_활용, load_판매자특성_메모
 
 # ── 모드 결정 / 임시 레코드 자동 생성 ────────────────────────
 _mode_raw  = st.session_state.get("edit_mode", "new")
@@ -254,16 +254,16 @@ def _cancel() -> None:
 
 
 # ── 탭 구성 ──────────────────────────────────────────────
-# 신규 등록(임시) 모드: 이미지부터 → 스펙 → 판매자 (이미지 업로드 후 VP 추출 워크플로우)
-# 수정 모드: 스펙부터 → 이미지 → 판매자 (스펙 편집이 가장 잦은 작업)
+# 신규 등록(임시) 모드: 이미지부터 → 스펙 → 엠군
+# 수정 모드: 스펙부터 → 이미지 → 엠군 (스펙 편집이 가장 잦은 작업)
 # 첫 번째 탭이 자동 활성화되는 Streamlit 특성 활용.
 if _is_temp:
-    tab_이미지, tab_스펙, tab_엠군, tab_판매자 = st.tabs(
-        ["📁 이미지 & Vision Pass", "📐 스펙", "🧪 엠군 파이프라인", "📝 판매자 정보"]
+    tab_이미지, tab_스펙, tab_엠군 = st.tabs(
+        ["📁 이미지 & Vision Pass", "📐 스펙", "🧪 엠군 파이프라인"]
     )
 else:
-    tab_스펙, tab_이미지, tab_엠군, tab_판매자 = st.tabs(
-        ["📐 스펙", "📁 이미지 & Vision Pass", "🧪 엠군 파이프라인", "📝 판매자 정보"]
+    tab_스펙, tab_이미지, tab_엠군 = st.tabs(
+        ["📐 스펙", "📁 이미지 & Vision Pass", "🧪 엠군 파이프라인"]
     )
 
 # ─────────────────────────────────────────────────────────
@@ -1896,24 +1896,57 @@ with tab_스펙:
     )
 
     st.divider()
-    st.subheader("🏪 판매자 특성 적용")
-    _판매자특성_전체 = load_판매자특성()
-    if _판매자특성_전체:
-        st.caption("⚙️ 설정 페이지에서 정의한 판매자 특성 중 **이 제품에 해당하는 항목**을 선택하세요. 01~05 단계가 참고합니다.")
-        _선택_현재 = row.get("판매자특성_선택") or []
-        if isinstance(_선택_현재, str):
+
+    def _coerce_selected(raw) -> set:
+        if isinstance(raw, str):
             try:
-                _선택_현재 = json.loads(_선택_현재)
+                raw = json.loads(raw)
             except Exception:
-                _선택_현재 = []
-        _선택_현재_set = set(_선택_현재)
+                raw = []
+        if not isinstance(raw, list):
+            raw = []
+        return set(raw)
+
+    _활용_전체 = load_판매자특성_활용()
+    _메모_전체 = load_판매자특성_메모()
+    _활용_선택_set = _coerce_selected(row.get("판매자특성_선택"))
+    _메모_선택_set = _coerce_selected(row.get("판매자특성_메모_선택"))
+
+    _좌, _우 = st.columns(2)
+
+    with _좌:
+        st.subheader("🏪 판매자 특성 (파이프라인 활용형)")
+        st.caption("⚙️ 설정에서 등록한 항목 중 이 제품에 해당하는 것을 체크. **01~05가 흐름상 필요하면 활용**합니다.")
         _판매자특성_체크 = []
-        for _특성 in _판매자특성_전체:
-            if st.checkbox(_특성, value=(_특성 in _선택_현재_set), key=f"chk_특성_{_특성}"):
-                _판매자특성_체크.append(_특성)
-    else:
-        st.caption("⚙️ [설정 페이지](0_settings)에서 판매자 특성을 먼저 등록하세요.")
-        _판매자특성_체크 = []
+        if _활용_전체:
+            for _특성 in _활용_전체:
+                if st.checkbox(_특성, value=(_특성 in _활용_선택_set), key=f"chk_활용_{_특성}"):
+                    _판매자특성_체크.append(_특성)
+        else:
+            st.caption("⚙️ [설정 페이지](0_settings)에서 먼저 등록하세요.")
+
+    with _우:
+        st.subheader("📝 판매자 특성 (개인 메모용)")
+        st.caption("판매자만 참고. **파이프라인 미참조** — 카피·이미지 생성에 영향 없음.")
+        _메모특성_체크 = []
+        if _메모_전체:
+            for _특성 in _메모_전체:
+                if st.checkbox(_특성, value=(_특성 in _메모_선택_set), key=f"chk_메모_{_특성}"):
+                    _메모특성_체크.append(_특성)
+        else:
+            st.caption("⚙️ [설정 페이지](0_settings)에서 먼저 등록하세요.")
+
+        판매자메모 = st.text_area(
+            "자유 메모 (1회성 노트)",
+            value=row.get("판매자메모") or "",
+            height=120,
+            placeholder=(
+                "판매자만 참고하는 메모 (시스템 미참조)\n"
+                "예) 박스 코너 약간 찌그러짐이 많은 상품\n"
+                "예) 9월 3일 입고분"
+            ),
+            key="ta_판매자메모",
+        )
 
     st.divider()
     _t2_l, _t2_r = st.columns([4, 1])
@@ -1953,7 +1986,9 @@ with tab_스펙:
             "온라인판매가격": 온라인판매가격 or None,
             "제품특징_bullet":  제품특징_bullet,
             "제품특징_추가":    _ss.get("ta_제품특징_추가", row.get("제품특징_추가")) or None,
-            "판매자특성_선택":  _판매자특성_체크,
+            "판매자특성_선택":       _판매자특성_체크,
+            "판매자특성_메모_선택":  _메모특성_체크,
+            "판매자메모":     판매자메모    or None,
             "검수완료":       검수필요,
             "검수메모":       검수메모      or None,
             "실시간재고":     실시간재고,
@@ -1962,10 +1997,6 @@ with tab_스펙:
             "재입고예정":     재입고예정,
             "단종여부":       단종여부,
             "온라인판매가능": 온라인판매가능,
-            "판매자메모":     _ss.get("sf_판매자메모",     row.get("판매자메모")    ) or None,
-            "판매채널":       _ss.get("sf_판매채널",       row.get("판매채널") or "") or None,
-            "박스재사용":     _ss.get("sf_박스재사용",     bool(row.get("박스재사용"))),
-            "주의사항":       _ss.get("sf_주의사항",       row.get("주의사항") or "") or None,
         })
     if _t2_r.button("취소", use_container_width=True, key="btn_cancel_tab2"):
         _cancel()
@@ -1982,84 +2013,6 @@ with tab_스펙:
         if _spec_view:
             st.markdown("**엠군 입력용 스펙 (get_product_spec 결과)**")
             st.json(_spec_view)
-
-# ─────────────────────────────────────────────────────────
-# 탭 — 판매자 정보
-# ─────────────────────────────────────────────────────────
-with tab_판매자:
-    st.subheader("🗒️ 판매자 개인 메모")
-    판매자메모 = st.text_area(
-        "판매자 개인 메모",
-        value=row.get("판매자메모") or "",
-        height=120,
-        placeholder="판매자만 참고하는 메모 (시스템 미참조)",
-        key="sf_판매자메모",
-        label_visibility="collapsed",
-    )
-    st.caption("판매자만 참고 — 시스템(01~05) 미참조.")
-
-    st.divider()
-    st.subheader("판매 조건")
-    판매채널   = st.text_input("판매 채널 제한", value=row.get("판매채널") or "",
-                                placeholder="예: 쿠팡, 스마트스토어", key="sf_판매채널")
-    박스재사용 = st.checkbox("박스 재사용", value=bool(row.get("박스재사용")), key="sf_박스재사용")
-    주의사항   = st.text_area("주의사항",   value=row.get("주의사항") or "", height=80,
-                               key="sf_주의사항")
-
-    st.divider()
-    _t3_l, _t3_r = st.columns([4, 1])
-    if _t3_l.button("💾 저장", type="primary", use_container_width=True, key="btn_save_tab3"):
-        # tab_스펙 블록이 먼저 실행됐으므로 지역변수 그대로 사용 가능
-        _save({
-            "제품명":         제품명.strip(),
-            "모델명":         모델명        or None,
-            "카테고리":       카테고리      or None,
-            "서브카테고리":   서브카테고리  or None,
-            "원산지":         원산지        or None,
-            "제조사":         제조사        or None,
-            "수입자":         수입자        or None,
-            "사용연령":       사용연령      or None,
-            "가로_cm":        가로          or None,
-            "세로_cm":        세로          or None,
-            "높이_cm":        높이          or None,
-            "무게_g":         무게          or None,
-            "박스_가로_cm":   박스_가로     or None,
-            "박스_세로_cm":   박스_세로     or None,
-            "박스_높이_cm":   박스_높이     or None,
-            "박스_무게_g":    박스_무게     or None,
-            "재질":           재질          or None,
-            "색상":           색상          or None,
-            "구성품":         구성품        or None,
-            "박스_재질":      박스_재질     or None,
-            "박스_색상":      박스_색상     or None,
-            "kc인증":         kc인증,
-            "kc인증번호":     kc인증번호    or None,
-            "전파인증":       전파인증,
-            "전파인증번호":   전파인증번호  or None,
-            "기타인증":       기타인증      or None,
-            "소매가":         소매가         or None,
-            "도매가":         도매가         or None,
-            "실제받는가격":   실제받는가격   or None,
-            "평균입고가":     평균입고가     or None,
-            "온라인판매가격": 온라인판매가격 or None,
-            "제품특징_bullet":  제품특징_bullet,
-            "제품특징_추가":    st.session_state.get("ta_제품특징_추가", row.get("제품특징_추가")) or None,
-            "판매자특성_선택":  _판매자특성_체크,
-            "판매자메모":     판매자메모    or None,
-            "검수완료":       검수필요,
-            "검수메모":       검수메모      or None,
-            "실시간재고":     실시간재고,
-            "처리후재고":     처리후재고,
-            "재고수량":       재고수량,
-            "재입고예정":     재입고예정,
-            "단종여부":       단종여부,
-            "온라인판매가능": 온라인판매가능,
-            "판매채널":       판매채널      or None,
-            "박스재사용":     박스재사용,
-            "주의사항":       주의사항      or None,
-        })
-    if _t3_r.button("취소", use_container_width=True, key="btn_cancel_tab3"):
-        _cancel()
 
 # ─────────────────────────────────────────────────────────
 # 탭 — 엠군 상태 (파이프라인 실행 이력)
@@ -2135,6 +2088,51 @@ with tab_엠군:
                         )
                     else:
                         st.caption("선택 타겟: 미선택")
+
+                # 작업한 타겟 목록 (멀티 타겟 자동 모드 검수용)
+                _STAGE_LABELS_FULL = {
+                    "02": "02 포지셔닝",
+                    "03": "03 네이밍",
+                    "04": "04 상세페이지",
+                    "05": "05 채널",
+                }
+                try:
+                    _all_targets = _emgun_storage.get_targets(run_id)
+                    _all_target_ids = [t["id"] for t in _all_targets]
+                    _results_summary = _emgun_storage.get_result_summary_for_targets(
+                        _all_target_ids
+                    )
+                except Exception:
+                    _all_targets = []
+                    _results_summary = {}
+
+                _worked = [
+                    t for t in _all_targets
+                    if _results_summary.get(t["id"])
+                ]
+                if _worked:
+                    with st.expander(
+                        f"📋 작업한 타겟 {len(_worked)}개",
+                        expanded=False,
+                    ):
+                        for t in _worked:
+                            stages = _results_summary.get(t["id"]) or set()
+                            ordered = [
+                                _STAGE_LABELS_FULL[s]
+                                for s in ("02", "03", "04", "05")
+                                if s in stages
+                            ]
+                            star = "⭐ " if t.get("추천_여부") else ""
+                            sel_mark = "🟢 " if t.get("선택됨") else ""
+                            label = (
+                                t.get("라벨")
+                                or t.get("캐릭터")
+                                or "(라벨 없음)"
+                            )
+                            st.markdown(
+                                f"- {sel_mark}{star}**#{t.get('순위')}** · {label} "
+                                f"`{t.get('모델', '')}` — {', '.join(ordered)}"
+                            )
 
                 btn_open, btn_del = st.columns(2)
                 with btn_open:
