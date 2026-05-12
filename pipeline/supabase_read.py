@@ -44,21 +44,45 @@ def _fetch_all(table: str, query_fn=None) -> list[dict]:
 def list_products(
     search: str = "",
     엠군상태: str | None = None,
-    limit: int = 200,
+    limit: int | None = None,
 ) -> list[dict]:
-    """상품 목록 조회. 검색·엠군상태 필터 지원."""
-    q = (
-        _client()
-        .table("상품")
-        .select("*")
-        .order("id", desc=True)
-        .limit(limit)
-    )
-    if search:
-        q = q.ilike("제품명", f"%{search}%")
-    if 엠군상태 and 엠군상태 != "전체":
-        q = q.eq("엠군상태", 엠군상태)
-    return q.execute().data or []
+    """상품 목록 조회. 검색·엠군상태 필터 지원.
+
+    limit=None(기본): 1,000행 제한 우회 페이지네이션으로 전체 조회.
+    limit=N: N행까지만 조회 (단일 요청, supabase 한도 1,000 적용).
+    """
+    def _apply_filters(q):
+        if search:
+            q = q.ilike("제품명", f"%{search}%")
+        if 엠군상태 and 엠군상태 != "전체":
+            if 엠군상태 == "미시작":
+                # NULL 저장된 레코드도 미시작으로 취급
+                q = q.or_("엠군상태.eq.미시작,엠군상태.is.null")
+            else:
+                q = q.eq("엠군상태", 엠군상태)
+        return q
+
+    if limit is not None:
+        q = _client().table("상품").select("*").order("id", desc=True).limit(limit)
+        q = _apply_filters(q)
+        return q.execute().data or []
+
+    rows, start = [], 0
+    while True:
+        q = (
+            _client()
+            .table("상품")
+            .select("*")
+            .order("id", desc=True)
+            .range(start, start + CHUNK - 1)
+        )
+        q = _apply_filters(q)
+        batch = q.execute().data or []
+        rows.extend(batch)
+        if len(batch) < CHUNK:
+            break
+        start += CHUNK
+    return rows
 
 
 def list_엠군상태_values() -> list[str]:

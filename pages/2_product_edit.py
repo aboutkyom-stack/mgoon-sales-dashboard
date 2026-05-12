@@ -2178,20 +2178,30 @@ with tab_엠군:
 
 # ── 삭제 ─────────────────────────────────────────────────
 st.divider()
+
+
+@st.dialog("제품 영구 삭제")
+def _confirm_delete_dialog() -> None:
+    st.warning(
+        f"**#{product_id} {row.get('제품명', '')}** 을(를) 영구 삭제합니다.\n\n"
+        "연결된 파일 기록도 함께 삭제되며 복구할 수 없습니다."
+    )
+    st.write("정말 삭제하시겠습니까?")
+    c_cancel, c_delete = st.columns(2)
+    if c_cancel.button("취소", use_container_width=True, key="dlg_cancel_delete"):
+        st.rerun()
+    if c_delete.button("🗑️ 삭제", type="primary", use_container_width=True, key="dlg_confirm_delete"):
+        try:
+            delete_상품(product_id)
+            st.session_state.pop("_temp_product_id", None)
+            st.session_state.pop("edit_product_id", None)
+            st.session_state.pop("edit_mode", None)
+            st.switch_page("pages/1_products.py")
+        except Exception as e:
+            st.error(f"삭제 실패: {e}")
+
+
 with st.expander("⚠️ 위험 구역", expanded=False):
     st.warning(f"**#{product_id} {row.get('제품명', '')}** 을(를) 삭제합니다. 연결된 파일 기록도 함께 삭제됩니다.")
-    confirm = st.text_input("삭제 확인: 제품명을 정확히 입력하세요",
-                            placeholder=row.get("제품명", ""), key="delete_confirm_input")
     if st.button("🗑️ 영구 삭제", type="secondary", key="btn_delete"):
-        if confirm == row.get("제품명", ""):
-            try:
-                delete_상품(product_id)
-                st.success("삭제 완료.")
-                st.session_state.pop("_temp_product_id", None)
-                st.session_state.pop("edit_product_id", None)
-                st.session_state.pop("edit_mode", None)
-                st.switch_page("pages/1_products.py")
-            except Exception as e:
-                st.error(f"삭제 실패: {e}")
-        else:
-            st.error("제품명이 일치하지 않습니다.")
+        _confirm_delete_dialog()

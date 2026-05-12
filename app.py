@@ -15,6 +15,7 @@ pg = st.navigation(
             st.Page("pages/2_naming.py",        title="🔤 네이밍"),
             st.Page("pages/3_gallery.py",       title="🖼️ 이미지 갤러리"),
             st.Page("pages/4_files.py",         title="🗂️ 상품 파일"),
+            st.Page("pages/5_image_match.py",   title="🔗 이미지-상품 매칭"),
         ],
         "시스템": [
             st.Page("pages/0_settings.py", title="⚙️ 설정"),

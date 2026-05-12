@@ -14,6 +14,7 @@ import sys
 
 from .lint import cross_lint_both
 from .llm import generate_both
+from .supabase_read import update_엠군상태
 from .loader import (
     build_user_input_01,
     build_user_input_02,
@@ -130,6 +131,12 @@ def run_stage_01(
             "parsed_with_ids": {"claude": [target_dict, ...], "gemini": [...]},
         }
     """
+    if spec.get("id"):
+        try:
+            update_엠군상태(spec["id"], "진행중")
+        except Exception:
+            pass
+
     system_prompt = load_agent_prompt("deficit_target")
     user_input = build_user_input_01(spec)
     raw = generate_both(
@@ -410,4 +417,11 @@ def run_stage_05(
             target_id=target_db_id, model=m,
             raw_output=raw.get(m, ""),
         )
+
+    if spec.get("id"):
+        try:
+            update_엠군상태(spec["id"], "완료")
+        except Exception:
+            pass
+
     return {"raw": raw, "lint": lint}

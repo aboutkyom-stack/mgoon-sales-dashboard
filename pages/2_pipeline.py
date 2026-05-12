@@ -1854,17 +1854,14 @@ if image_direction_04_1 and any(image_direction_04_1.values()):
 
     def _build_section_copy_block(sec: dict) -> str:
         """섹션 정보만 GPT Image 복붙용 한국어 마크다운으로 조립.
-        디자인 시스템은 별도 블록(_build_design_system_copy_block)에서 1회만 입력."""
+        디자인 시스템은 별도 블록(_build_design_system_copy_block)에서 1회만 입력.
+        섹션 이름(예: '오프닝—결핍직격')은 마케팅 전략 레이블이라 GPT에 전달하면
+        자율성을 떨어뜨리므로 복붙 영역에서는 제외하고 카드 헤더에만 노출한다."""
         lines: list[str] = []
-
-        # 섹션
-        order = sec.get("order")
-        name = sec.get("name") or "(이름 없음)"
-        lines.append(f"[섹션 {order}] {name}")
 
         canvas = sec.get("canvas") or {}
         if canvas:
-            wpx = canvas.get("width_px") or canvas.get("size_px") or ""
+            wpx = canvas.get("width_px") or ""
             hpx = canvas.get("height_px") or ""
             ratio = canvas.get("ratio") or ""
             if wpx and hpx:
@@ -1886,9 +1883,14 @@ if image_direction_04_1 and any(image_direction_04_1.values()):
                 if not isinstance(te, dict):
                     continue
                 content = te.get("content") or ""
+                role = te.get("role") or ""
                 # 카피 내 줄바꿈은 공백으로 치환 — GPT Image가 문맥 보고 알아서 줄바꿈
                 content_oneline = " ".join(content.split())
-                lines.append(f'  · "{content_oneline}"')
+                role_suffix = f" [{role}]" if role else ""
+                lines.append(f'  · "{content_oneline}"{role_suffix}')
+
+        if sec.get("design_notes"):
+            lines.append(f"- 디자인 노트: {sec.get('design_notes')}")
 
         return "\n".join(lines)
 
@@ -1927,7 +1929,7 @@ if image_direction_04_1 and any(image_direction_04_1.values()):
                     canvas = sec.get("canvas") or {}
                     if canvas:
                         ratio = canvas.get("ratio") or ""
-                        wpx = canvas.get("width_px") or canvas.get("size_px") or ""
+                        wpx = canvas.get("width_px") or ""
                         hpx = canvas.get("height_px") or ""
                         size_str = f"{wpx}x{hpx}" if wpx and hpx else (wpx or "")
                         st.caption(f"📐 캔버스: {size_str} ({ratio})" if ratio or size_str else "")
