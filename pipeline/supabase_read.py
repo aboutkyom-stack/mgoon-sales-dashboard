@@ -280,6 +280,13 @@ def delete_임시_products(exclude_id: int | None = None) -> int:
     return count
 
 
+# ── 엠군작업대상 토글 ────────────────────────────────────────
+
+def set_엠군작업대상(상품_id: int, value: bool) -> None:
+    """상품.엠군작업대상 값을 설정한다."""
+    _client().table("상품").update({"엠군작업대상": value}).eq("id", 상품_id).execute()
+
+
 # ── 엠군상태 업데이트 ─────────────────────────────────────
 
 def update_엠군상태(상품_id: int, 상태: str) -> None:

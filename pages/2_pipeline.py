@@ -14,6 +14,7 @@ import re
 
 import streamlit as st
 
+from pipeline.role import is_owner
 from pipeline.auto_pipeline import (
     _extract_engine_plan,
     _extract_positioning_json,
@@ -572,6 +573,8 @@ with st.container(border=True):
 st.divider()
 
 # ── 🚀 자동 모드 ─────────────────────────────────────────
+if not is_owner():
+    st.info("🔒 파이프라인 실행은 owner 전용입니다. 저장된 결과는 아래에서 조회할 수 있습니다.")
 with st.expander("🚀 자동 모드 (논스톱 실행)", expanded=False):
     st.caption(
         "01~05를 논스톱으로 돌립니다. 시간이 오래 걸리니 작업시켜놓고 다른 일을 하세요. "
@@ -613,6 +616,7 @@ with st.expander("🚀 자동 모드 (논스톱 실행)", expanded=False):
         if st.button(
             "🚀 추천 모드 자동 실행",
             type="primary",
+            disabled=not is_owner(),
             use_container_width=True,
             key="auto_recommend_btn",
         ):
@@ -662,7 +666,7 @@ with st.expander("🚀 자동 모드 (논스톱 실행)", expanded=False):
                     f"🚀 멀티 타겟 자동 실행 ({len(multi_selected)}개 타겟)",
                     type="primary",
                     use_container_width=True,
-                    disabled=not multi_selected,
+                    disabled=not is_owner() or not multi_selected,
                     key="auto_multi_btn",
                 ):
                     ss["_auto_trigger"] = "multi"
@@ -1005,6 +1009,7 @@ with col_run:
         _stage_action_label("01", cfg),
         type="primary",
         use_container_width=True,
+        disabled=not is_owner(),
     )
 with col_info:
     st.caption(caption_for_stage("01", cfg))
@@ -1339,7 +1344,7 @@ if targets_01:
         _stage_action_label("02", cfg),
         type="primary",
         use_container_width=True,
-        disabled=not (target_label.strip() and target_text.strip()),
+        disabled=not is_owner() or not (target_label.strip() and target_text.strip()),
     )
 
     if run_02:
@@ -1565,7 +1570,7 @@ if positioning_02 and ss.get("selected_target_db_id"):
         _stage_action_label("04", cfg),
         type="primary",
         use_container_width=True,
-        disabled=not pos_text_for_04.strip(),
+        disabled=not is_owner() or not pos_text_for_04.strip(),
         key="run_04",
     )
     # 04 결과 영역의 "🔄 재생성" 버튼이 누른 트리거도 같이 받는다.
@@ -1797,7 +1802,7 @@ if (
         "🔍 04_b 검수 실행",
         type="primary",
         use_container_width=True,
-        disabled=not detail_text_for_04_b.strip(),
+        disabled=not is_owner() or not detail_text_for_04_b.strip(),
         key="run_04_b",
     )
 
@@ -1940,7 +1945,7 @@ if (
         _stage_action_label("04_1", cfg),
         type="primary",
         use_container_width=True,
-        disabled=not detail_text_for_04_1.strip(),
+        disabled=not is_owner() or not detail_text_for_04_1.strip(),
         key="run_04_1",
     )
     if ss.pop("_restage_04_1", False):
@@ -2233,7 +2238,7 @@ if positioning_02 and ss.get("selected_target_db_id"):
         _stage_action_label("05", cfg),
         type="primary",
         use_container_width=True,
-        disabled=not pos_text_for_05.strip(),
+        disabled=not is_owner() or not pos_text_for_05.strip(),
         key="run_05",
     )
     if ss.pop("_restage_05", False):

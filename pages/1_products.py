@@ -19,6 +19,7 @@ from pipeline.supabase_read import (
     get_image_counts,
     list_products,
     list_엠군상태_values,
+    set_엠군작업대상,
 )
 
 _COL_PREFS_FILE = Path(__file__).parent.parent / "settings_columns.json"
@@ -120,6 +121,10 @@ st.write(
 df_all = pd.DataFrame(rows)
 df_all.insert(1, "🖼️이미지", df_all["id"].apply(lambda x: image_counts.get(x, 0)))
 df_all.insert(2, "완성도", df_all["_완성도"])
+if "엠군작업대상" in df_all.columns:
+    df_all.insert(3, "🎯작업대상", df_all["엠군작업대상"].apply(
+        lambda x: "✅" if x else "⬛"
+    ))
 
 visible_data_cols = [c for c in df_all.columns if not c.startswith("_")]
 for col in visible_data_cols:
@@ -208,7 +213,7 @@ def _render_table(df_sub: pd.DataFrame, key: str, title: str):
                 return ""
             return f"[{pid}] {name_map.get(pid, '')}"
 
-        c1, c2 = st.columns([3, 1])
+        c1, c2, c3 = st.columns([3, 1, 1])
         with c1:
             sel_id = st.selectbox(
                 "🔍 검색 (제품명 또는 id 일부 입력)",
@@ -223,6 +228,12 @@ def _render_table(df_sub: pd.DataFrame, key: str, title: str):
                 key=f"status_{key}",
                 help=_HELP_엠군상태,
             )
+        with c3:
+            작업대상_filter = st.selectbox(
+                "🎯작업대상",
+                ["전체", "✅ 작업대상", "⬛ 제외"],
+                key=f"작업대상_{key}",
+            )
 
         view = df_sub
         if sel_id is not None:
@@ -232,6 +243,10 @@ def _render_table(df_sub: pd.DataFrame, key: str, title: str):
                 view = view[(view["엠군상태"] == "미시작") | (view["엠군상태"].isna())]
             else:
                 view = view[view["엠군상태"] == status]
+        if 작업대상_filter == "✅ 작업대상" and "엠군작업대상" in view.columns:
+            view = view[view["엠군작업대상"] == True]
+        elif 작업대상_filter == "⬛ 제외" and "엠군작업대상" in view.columns:
+            view = view[(view["엠군작업대상"] == False) | (view["엠군작업대상"].isna())]
         view = view.reset_index(drop=True)
 
         if view.empty:

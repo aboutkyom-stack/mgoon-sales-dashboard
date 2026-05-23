@@ -42,10 +42,12 @@ from pipeline.supabase_read import (
     list_account_folders,
     list_비전패스_이력,
     set_account_folder,
+    set_엠군작업대상,
     update_상품,
     update_시각설명,
     upsert_파일,
 )
+from pipeline.role import is_owner
 from pipeline.models_config import (
     ALL_VP_MODELS,
     CLAUDE_VP_MODELS,
@@ -95,17 +97,29 @@ else:
     st.title(f"✏️ 제품 수정 — #{product_id}")
     st.caption("🗄️ DB — 상품 테이블")
 
-if st.button("← 목록으로", key="back_btn"):
-    # 임시 레코드면 저장 없이 이탈하는 것이므로 즉시 삭제 (_cancel 로직과 동일)
-    if _is_temp:
-        try:
-            delete_상품(product_id)
-        except Exception:
-            pass
-        st.session_state.pop("_temp_product_id", None)
-    st.session_state.pop("edit_product_id", None)
-    st.session_state.pop("edit_mode", None)
-    st.switch_page("pages/1_products.py")
+_btn_col1, _btn_col2 = st.columns([1, 4])
+with _btn_col1:
+    if st.button("← 목록으로", key="back_btn"):
+        if _is_temp:
+            try:
+                delete_상품(product_id)
+            except Exception:
+                pass
+            st.session_state.pop("_temp_product_id", None)
+        st.session_state.pop("edit_product_id", None)
+        st.session_state.pop("edit_mode", None)
+        st.switch_page("pages/1_products.py")
+
+# ── 엠군 작업대상 토글 (임시 레코드 제외, owner/partner 모두 가능) ──
+if not _is_temp and product_id:
+    _작업대상_현재 = bool(row.get("엠군작업대상", False))
+    with _btn_col2:
+        _label = "✅ 엠군 작업대상 (ON)" if _작업대상_현재 else "⬛ 엠군 작업대상 (OFF)"
+        _btn_type = "primary" if _작업대상_현재 else "secondary"
+        if st.button(_label, key="작업대상_toggle_btn", type=_btn_type,
+                     help="클릭하면 ON/OFF가 전환됩니다."):
+            set_엠군작업대상(product_id, not _작업대상_현재)
+            st.rerun()
 
 st.divider()
 
@@ -599,8 +613,10 @@ with tab_이미지:
         f"🔍 Vision Pass — {len(_vp_images)}장 분석 가능"
         if _vp_images else "🔍 Vision Pass (이미지 없음 — 먼저 업로드)"
     )
-    with st.expander(_vp_exp_label, expanded=bool(_vp_images)):
-        if not _vp_images:
+    with st.expander(_vp_exp_label, expanded=bool(_vp_images) and is_owner()):
+        if not is_owner():
+            st.info("🔒 Vision Pass 실행은 owner 전용입니다. 저장된 이력만 조회할 수 있습니다.")
+        elif not _vp_images:
             st.caption("이미지를 업로드하면 Vision Pass를 실행할 수 있습니다.")
         else:
             # Q4: 실행 모드 선택
@@ -1443,8 +1459,10 @@ with tab_이미지:
         f"🎬 동영상 Vision Pass — {len(_vp_videos)}개 분석 가능"
         if _vp_videos else "🎬 동영상 Vision Pass (동영상 없음)"
     )
-    with st.expander(_vp_video_label, expanded=bool(_vp_videos)):
-        if not _vp_videos:
+    with st.expander(_vp_video_label, expanded=bool(_vp_videos) and is_owner()):
+        if not is_owner():
+            st.info("🔒 동영상 Vision Pass 실행은 owner 전용입니다.")
+        elif not _vp_videos:
             st.caption("동영상(mp4/mov/webm)을 업로드하면 Gemini로 분석할 수 있습니다.")
             st.caption("⚠️ Claude는 동영상 미지원 — Gemini 전용 기능입니다.")
         else:
@@ -1627,7 +1645,7 @@ with tab_스펙:
 
     # ── 스펙 자동 추출 (4-C) ──────────────────────────────
     _saved_desc_for_extract = row.get("시각설명") or ""
-    if _saved_desc_for_extract:
+    if _saved_desc_for_extract and is_owner():
         with st.expander("🤖 시각설명 → 스펙 필드 자동 추출 (수동 재실행)", expanded=False):
             st.caption(
                 "시각설명 저장 시 자동으로 1회 실행됩니다. "
