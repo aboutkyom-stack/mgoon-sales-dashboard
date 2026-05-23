@@ -20,6 +20,7 @@ from .loader import (
     build_user_input_02,
     build_user_input_04,
     build_user_input_04_1,
+    build_user_input_04_b,
     build_user_input_05,
     load_agent_prompt,
 )
@@ -44,6 +45,91 @@ def _extract_targets_json(text: str) -> dict | None:
         return json.loads(raw)
     except Exception:
         return None
+
+
+def _extract_positioning_json(text: str) -> dict | None:
+    """02 결과 텍스트에서 ---POSITIONING_JSON--- 블록을 파싱.
+
+    반환: {target_label, rank, cv_analysis, positioning_map, two_cut_two_in,
+           opening_draft, value_additions, same_category_differentiation,
+           category_objections, product_nature, rule_engine_inputs,
+           rule_engine_flags, persuasion_method_candidates} 또는 None.
+    """
+    if not text:
+        return None
+    m = re.search(
+        r"---POSITIONING_JSON---\s*(.*?)\s*---END_POSITIONING_JSON---",
+        text,
+        re.DOTALL,
+    )
+    if not m:
+        return None
+    raw = m.group(1).strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
+def _extract_engine_plan(text: str) -> dict | None:
+    """04_a 결과 텍스트에서 ENGINE_PLAN yaml 블록을 파싱.
+
+    반환: {타겟_라벨, 설득_방식_주, 설득_방식_보조, 보정_요약, 블록_시퀀스,
+           꺼진_블록_사유, 추가_권고, 참고_장수_합계} 또는 None.
+
+    파싱 정규식은 04_a instruction.md 명세와 동일: ```yaml 블록의 첫 줄이
+    `타겟_라벨:`이어야 매치.
+    """
+    if not text:
+        return None
+    m = re.search(
+        r"```yaml\s*\n(타겟_라벨:.*?)\n```",
+        text,
+        re.DOTALL,
+    )
+    if not m:
+        return None
+    try:
+        import yaml
+    except ImportError:
+        print("[_extract_engine_plan] PyYAML 미설치 — pip install PyYAML 필요", file=sys.stderr)
+        return None
+    try:
+        return yaml.safe_load(m.group(1))
+    except Exception as e:
+        print(f"[_extract_engine_plan] yaml 파싱 실패: {type(e).__name__}: {e}", file=sys.stderr)
+        return None
+
+
+def _extract_review_blocks(text: str) -> tuple[str | None, str | None]:
+    """04_b 결과 텍스트에서 검수 보고서·다듬은 콘티 두 블록을 추출.
+
+    명세는 `agents/04_b_review/instruction.md` "출력 블록 마커 명세" 섹션 참조.
+
+    반환: (검수_보고서, 다듬은_콘티) — 마커 누락 시 해당 항목은 None.
+    """
+    if not text:
+        return None, None
+    report = None
+    refined = None
+    m1 = re.search(
+        r"---REVIEW_REPORT---\s*(.*?)\s*---END_REVIEW_REPORT---",
+        text,
+        re.DOTALL,
+    )
+    if m1:
+        report = m1.group(1).strip()
+    m2 = re.search(
+        r"---REFINED_DRAFT---\s*(.*?)\s*---END_REFINED_DRAFT---",
+        text,
+        re.DOTALL,
+    )
+    if m2:
+        refined = m2.group(1).strip()
+    return report, refined
 
 
 def _extract_sections_json(text: str) -> dict | None:
@@ -247,10 +333,16 @@ def run_stage_02(
     storage.clear_selected_in_run(run_id)
     storage.mark_target_selected(target_db_id, True)
     for m in ("claude", "gemini"):
+        text = raw.get(m, "") or ""
+        pos = _extract_positioning_json(text) or {}
         storage.save_positioning(
             target_id=target_db_id,
             model=m,
-            raw_output=raw.get(m, ""),
+            raw_output=text,
+            category_objections=pos.get("category_objections"),
+            rule_engine_inputs=pos.get("rule_engine_inputs"),
+            rule_engine_flags=pos.get("rule_engine_flags"),
+            persuasion_method_candidates=pos.get("persuasion_method_candidates"),
         )
     return {"raw": raw, "lint": lint}
 
@@ -292,11 +384,109 @@ def run_stage_04(
     else:
         lint = {"claude": "", "gemini": ""}
     for m in ("claude", "gemini"):
+        text = raw.get(m, "") or ""
+        plan = _extract_engine_plan(text) or {}
         storage.save_상세페이지(
             target_id=target_db_id, model=m,
-            raw_output=raw.get(m, ""),
+            raw_output=text,
+            engine_plan=plan or None,
+            한_축_사슬=plan.get("한_축_사슬"),
+            설득_방식_주=plan.get("설득_방식_주"),
+            설득_방식_보조=plan.get("설득_방식_보조"),
         )
     return {"raw": raw, "lint": lint}
+
+
+def run_stage_04_b(
+    spec: dict,
+    target: dict,
+    positioning_text: str,
+    positioning_basis: str,
+    detail_text: str,
+    detail_basis: str,
+    storage,
+    target_db_id: int,
+    claude_model: str | None,
+    gemini_model: str | None,
+    lint_claude_model: str | None = None,
+    lint_gemini_model: str | None = None,
+) -> dict:
+    """04_b 검수 자동 실행 (옵션 3 — 사용자 명시적 토글 호출).
+
+    04_a 콘티(detail_text)를 받아 검수 보고서 + 다듬은 콘티를 생성한다.
+    출력은 `---REVIEW_REPORT---` / `---REFINED_DRAFT---` 마커로 분리되어
+    DB `엠군_상세페이지_검수` 테이블에 저장된다 (04_a 행 id를 FK로).
+
+    옵션 3 정책:
+    - 호출 안 된 모델(빈 출력)은 행 저장 X (2단계의 Gemini 빈 행 노이즈 회피)
+    - 04_a 결과 없는 모델은 04_b 저장 불가 (FK 위반 방지) → skip
+
+    Returns:
+        {
+            "raw": {"claude": str, "gemini": str},
+            "lint": {"claude": str, "gemini": str},
+            "saved_ids": {"claude": int | None, "gemini": int | None},
+            "detail_id_map": {"claude": int | None, "gemini": int | None},
+        }
+    """
+    system_prompt = load_agent_prompt("detail_review")
+    target_dict = {
+        "label": target.get("label") or "",
+        "description": _build_target_description(target),
+    }
+    user_input = build_user_input_04_b(
+        spec, target_dict, positioning_text, detail_text,
+        positioning_basis=positioning_basis,
+        detail_basis=detail_basis,
+    )
+    raw = generate_both(
+        system_prompt, user_input,
+        claude_model=claude_model,
+        gemini_model=gemini_model,
+        max_tokens=16384,  # 검수 보고서 + 다듬은 콘티 둘 다 담아야 함
+    )
+    if lint_claude_model or lint_gemini_model:
+        lint = cross_lint_both(
+            "detail_review",
+            raw.get("claude", ""),
+            raw.get("gemini", ""),
+            claude_model=lint_claude_model,
+            gemini_model=lint_gemini_model,
+        )
+    else:
+        lint = {"claude": "", "gemini": ""}
+
+    # 04_a DB 행 매핑 (모델별 최신 1행)
+    detail_rows = storage.get_상세페이지(target_db_id)
+    detail_id_map: dict[str, int | None] = {"claude": None, "gemini": None}
+    for row in detail_rows:
+        m = row.get("모델")
+        if m in detail_id_map and detail_id_map[m] is None:
+            detail_id_map[m] = row.get("id")
+
+    saved_ids: dict[str, int | None] = {"claude": None, "gemini": None}
+    for m in ("claude", "gemini"):
+        text = raw.get(m, "") or ""
+        if not text:
+            continue  # 호출 안 된 모델 → 빈 행 저장 X
+        did = detail_id_map.get(m)
+        if did is None:
+            continue  # 04_a 결과 없는 모델 → FK 매핑 불가 → skip
+        report, refined = _extract_review_blocks(text)
+        saved_ids[m] = storage.save_상세페이지_검수(
+            detail_id=did,
+            model=m,
+            raw_output=text,
+            검수_보고서=report,
+            다듬은_콘티=refined,
+        )
+
+    return {
+        "raw": raw,
+        "lint": lint,
+        "saved_ids": saved_ids,
+        "detail_id_map": detail_id_map,
+    }
 
 
 def run_stage_04_1(
@@ -360,7 +550,8 @@ def run_stage_04_1(
     for m in ("claude", "gemini"):
         text = raw.get(m, "") or ""
         sections_json = _extract_sections_json(text)
-        sections = (sections_json or {}).get("sections")
+        # core.md 스키마는 "image_directions" 키 사용; "sections"는 하위호환 fallback
+        sections = (sections_json or {}).get("image_directions") or (sections_json or {}).get("sections")
         design_system = (sections_json or {}).get("design_system")
         selection_method = (sections_json or {}).get("selection_method")
         parsed[m] = sections_json

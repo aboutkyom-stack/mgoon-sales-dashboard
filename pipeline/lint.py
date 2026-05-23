@@ -25,7 +25,8 @@ AGENT_SLUG = {
     "deficit_target":  "01_deficit_target",
     "positioning":     "02_positioning",
     "naming":          "03_naming",
-    "detail_page":     "04_detail_page",
+    "detail_page":     "04_a_writing",       # 04 콘티 생성 (자동화 04 단계 본 작업)
+    "detail_review":   "04_b_review",        # 04 검수 (별도 호출용)
     "image_direction": "04_1_image_direction",
     "channel":         "05_channel",
 }

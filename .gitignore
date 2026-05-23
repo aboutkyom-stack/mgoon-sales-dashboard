@@ -21,3 +21,6 @@ token.pickle
 
 # 로컬 .py/.md 스냅샷 백업 (git 외 belt-and-suspenders)
 _backups/
+
+# 테스트 데이터 (이미지·영상 등 바이너리)
+테스트/

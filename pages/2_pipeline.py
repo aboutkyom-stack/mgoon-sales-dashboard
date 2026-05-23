@@ -15,11 +15,15 @@ import re
 import streamlit as st
 
 from pipeline.auto_pipeline import (
+    _extract_engine_plan,
+    _extract_positioning_json,
+    _extract_review_blocks,
     _extract_sections_json,
     run_stage_01 as auto_run_01,
     run_stage_02 as auto_run_02,
     run_stage_04 as auto_run_04,
     run_stage_04_1 as auto_run_04_1,
+    run_stage_04_b as auto_run_04_b,
     run_stage_05 as auto_run_05,
 )
 from pipeline.lint import cross_lint_both, parse_lint_status
@@ -31,6 +35,7 @@ from pipeline.loader import (
     build_user_input_02,
     build_user_input_04,
     build_user_input_04_1,
+    build_user_input_04_b,
     build_user_input_05,
     load_agent_prompt,
 )
@@ -585,17 +590,22 @@ with st.expander("🚀 자동 모드 (논스톱 실행)", expanded=False):
     )
 
     st.markdown("**실행 단계**")
-    cols_stage = st.columns(4)
+    cols_stage = st.columns(5)
     with cols_stage[0]:
         auto_do_02 = st.checkbox("02 포지셔닝", value=True, key="auto_do_02")
     with cols_stage[1]:
         auto_do_04 = st.checkbox("04 상세페이지", value=True, key="auto_do_04")
     with cols_stage[2]:
+        auto_do_04_b = st.checkbox(
+            "04_b 검수", value=False, key="auto_do_04_b",
+            help="04_a 콘티에 대한 검수 + 다듬은 콘티 생성. 옵션 단계(선택적). 04가 함께 체크돼 있거나 기존 04 결과가 있어야 실행됩니다."
+        )
+    with cols_stage[3]:
         auto_do_04_1 = st.checkbox(
             "04-1 이미지 디렉션", value=False, key="auto_do_04_1",
             help="04 콘티가 있어야 실행됩니다. 04를 함께 체크하거나 기존 04 결과가 있어야 합니다."
         )
-    with cols_stage[3]:
+    with cols_stage[4]:
         auto_do_05 = st.checkbox("05 채널", value=True, key="auto_do_05")
 
     if auto_mode == "추천 #1 자동":
@@ -609,6 +619,7 @@ with st.expander("🚀 자동 모드 (논스톱 실행)", expanded=False):
             ss["_auto_trigger"] = "recommend"
             ss["_auto_stages"] = {
                 "02": auto_do_02, "04": auto_do_04,
+                "04_b": auto_do_04_b,
                 "04_1": auto_do_04_1, "05": auto_do_05,
             }
             st.rerun()
@@ -657,6 +668,7 @@ with st.expander("🚀 자동 모드 (논스톱 실행)", expanded=False):
                     ss["_auto_trigger"] = "multi"
                     ss["_auto_stages"] = {
                         "02": auto_do_02, "04": auto_do_04,
+                        "04_b": auto_do_04_b,
                         "04_1": auto_do_04_1, "05": auto_do_05,
                     }
                     ss["_auto_multi_basis"] = multi_basis
@@ -714,7 +726,7 @@ def _populate_ss_from_stage_05(result: dict) -> None:
 
 
 _auto_trigger = ss.pop("_auto_trigger", None)
-_auto_stages = ss.pop("_auto_stages", {"02": True, "04": True, "05": True})
+_auto_stages = ss.pop("_auto_stages", {"02": True, "04": True, "04_b": False, "04_1": False, "05": True})
 
 if _auto_trigger == "recommend":
     with st.status("🚀 추천 모드 자동 실행 중…", expanded=True) as status:
@@ -786,6 +798,30 @@ if _auto_trigger == "recommend":
                     )
                     _populate_ss_from_stage_04(r04)
                     st.write("✅ 04 완료")
+
+            # 04_b 검수 (옵션 — 토글)
+            if _auto_stages.get("04_b"):
+                pos_text = ""
+                if ss.get("positioning_02"):
+                    pos_text = ss["positioning_02"].get(rec_basis) or ""
+                detail_text = ""
+                if ss.get("detail_04"):
+                    detail_text = ss["detail_04"].get(rec_basis) or ""
+                if not detail_text:
+                    st.write("⚠️ 04_b 스킵 — 04 결과 없음")
+                elif not pos_text:
+                    st.write("⚠️ 04_b 스킵 — 02 결과 없음")
+                else:
+                    st.write("▶ 04_b 검수 실행 중…")
+                    r04_b = auto_run_04_b(
+                        spec, rec_target, pos_text, rec_basis,
+                        detail_text, rec_basis, storage,
+                        target_db_id, claude_model_04, gemini_model_04,
+                        lint_claude_model=lint_c_04, lint_gemini_model=lint_g_04,
+                    )
+                    ss["review_04_b"] = r04_b["raw"]
+                    ss["review_04_b_basis"] = rec_basis
+                    st.write("✅ 04_b 완료")
 
             # 04-1 이미지 디렉션
             if _auto_stages.get("04_1"):
@@ -887,6 +923,26 @@ elif _auto_trigger == "multi":
                             st.write("✅ 04 완료")
                     else:
                         last_detail = ss.get("detail_04") or {}
+
+                    # 04_b 검수 (옵션 — 토글)
+                    if _auto_stages.get("04_b"):
+                        pos_text = last_pos.get(multi_basis) or ""
+                        detail_text = last_detail.get(multi_basis) or ""
+                        if not detail_text:
+                            st.write("⚠️ 04_b 스킵 — 04 결과 없음")
+                        elif not pos_text:
+                            st.write("⚠️ 04_b 스킵 — 02 결과 없음")
+                        else:
+                            st.write("▶ 04_b 검수…")
+                            r04_b = auto_run_04_b(
+                                spec, tgt, pos_text, multi_basis,
+                                detail_text, multi_basis, storage,
+                                target_db_id, claude_model_04, gemini_model_04,
+                                lint_claude_model=lint_c_04, lint_gemini_model=lint_g_04,
+                            )
+                            ss["review_04_b"] = r04_b["raw"]
+                            ss["review_04_b_basis"] = multi_basis
+                            st.write("✅ 04_b 완료")
 
                     if _auto_stages.get("04_1"):
                         pos_text = last_pos.get(multi_basis) or ""
@@ -1348,10 +1404,16 @@ if targets_01:
             ss["selected_target_db_id"] = selected_db_id
 
             for m in ("claude", "gemini"):
+                text_02 = positioning_02.get(m, "") or ""
+                pos_parsed = _extract_positioning_json(text_02) or {}
                 storage.save_positioning(
                     target_id=selected_db_id,
                     model=m,
-                    raw_output=positioning_02.get(m, ""),
+                    raw_output=text_02,
+                    category_objections=pos_parsed.get("category_objections"),
+                    rule_engine_inputs=pos_parsed.get("rule_engine_inputs"),
+                    rule_engine_flags=pos_parsed.get("rule_engine_flags"),
+                    persuasion_method_candidates=pos_parsed.get("persuasion_method_candidates"),
                 )
             ss["saved_run_id"] = run_id
             st.success(
@@ -1402,10 +1464,15 @@ if positioning_02:
 
                     tid = ss.get("selected_target_db_id")
                     if tid:
+                        pos_parsed = _extract_positioning_json(merged) or {}
                         storage.save_positioning(
                             target_id=tid,
                             model=sec_payload["builder"],
                             raw_output=merged,
+                            category_objections=pos_parsed.get("category_objections"),
+                            rule_engine_inputs=pos_parsed.get("rule_engine_inputs"),
+                            rule_engine_flags=pos_parsed.get("rule_engine_flags"),
+                            persuasion_method_candidates=pos_parsed.get("persuasion_method_candidates"),
                         )
                     # 린터 캐시 무효화 — 헤더 ✗로 표시되어 재검수 필요 신호
                     ss.pop("lint_02", None)
@@ -1548,9 +1615,15 @@ if positioning_02 and ss.get("selected_target_db_id"):
         try:
             tid = ss["selected_target_db_id"]
             for m in ("claude", "gemini"):
+                text_04 = detail_04.get(m, "") or ""
+                plan_parsed = _extract_engine_plan(text_04) or {}
                 storage.save_상세페이지(
                     target_id=tid, model=m,
-                    raw_output=detail_04.get(m, ""),
+                    raw_output=text_04,
+                    engine_plan=plan_parsed or None,
+                    한_축_사슬=plan_parsed.get("한_축_사슬"),
+                    설득_방식_주=plan_parsed.get("설득_방식_주"),
+                    설득_방식_보조=plan_parsed.get("설득_방식_보조"),
                 )
             st.success(f"04 저장 완료 (타겟_id={tid})")
         except Exception as e:
@@ -1601,10 +1674,15 @@ if detail_04:
 
                     tid = ss.get("selected_target_db_id")
                     if tid:
+                        plan_parsed = _extract_engine_plan(merged) or {}
                         storage.save_상세페이지(
                             target_id=tid,
                             model=sec_payload_04["builder"],
                             raw_output=merged,
+                            engine_plan=plan_parsed or None,
+                            한_축_사슬=plan_parsed.get("한_축_사슬"),
+                            설득_방식_주=plan_parsed.get("설득_방식_주"),
+                            설득_방식_보조=plan_parsed.get("설득_방식_보조"),
                         )
                     ss.pop("lint_04", None)
                     lint_04 = {}
@@ -1675,6 +1753,152 @@ if detail_04:
                 marker_style="bracket",
             )
             _version_history_ui("04", "gemini", ss.get("selected_target_db_id"))
+
+# ── Step 3-B: 04_b 검수 (옵션 3 — 선택적 토글) ─────────────
+# 04_a 콘티를 풀세트·ENGINE_PLAN 기준으로 검수. 항상 거치지 않고 필요할 때만 호출.
+# 옵션 1 (자동 단계화)로 전환하려면 04_a 직후 자동 호출하도록 변경하면 됨.
+detail_04 = ss.get("detail_04")
+if (
+    positioning_02
+    and ss.get("selected_target_db_id")
+    and detail_04
+    and any((detail_04.get(m) or "").strip() for m in ("claude", "gemini"))
+):
+    st.divider()
+    st.header("Step 3-B · 04_b 검수 (선택)")
+    st.caption(
+        "04_a 콘티를 풀세트·ENGINE_PLAN 기준으로 검수합니다. "
+        "결과는 검수 보고서 + 다듬은 콘티 두 블록으로 저장됩니다. "
+        "선택적 단계 — 콘티 퀄리티가 걱정될 때만 실행하세요."
+    )
+
+    # 04_b는 04와 같은 모델·basis를 재사용 (옵션 3 단순화)
+    available_bases_04b = [
+        m for m in ("claude", "gemini")
+        if (detail_04.get(m) or "").strip()
+    ]
+    if len(available_bases_04b) >= 2:
+        review_basis = st.radio(
+            "04_b 입력으로 쓸 04_a 콘티",
+            options=available_bases_04b,
+            horizontal=True,
+            format_func=lambda x: {"claude": "🟠 Claude", "gemini": "🔵 Gemini"}[x],
+            key="basis_04_b",
+        )
+    elif available_bases_04b:
+        review_basis = available_bases_04b[0]
+    else:
+        review_basis = "claude"
+
+    detail_text_for_04_b = detail_04.get(review_basis) or ""
+    pos_text_for_04_b = (positioning_02 or {}).get(review_basis) or ""
+
+    run_04_b = st.button(
+        "🔍 04_b 검수 실행",
+        type="primary",
+        use_container_width=True,
+        disabled=not detail_text_for_04_b.strip(),
+        key="run_04_b",
+    )
+
+    if run_04_b:
+        sel_target = _find_selected_target_dict(ss["selected_target_db_id"])
+        if not sel_target:
+            st.error("선택된 타겟 정보를 찾을 수 없습니다. 02부터 다시 실행하세요.")
+            st.stop()
+
+        target_dict = {
+            "label": sel_target.get("label") or "",
+            "description": _build_target_description(sel_target),
+        }
+        try:
+            system_prompt = load_agent_prompt("detail_review")
+            user_input = build_user_input_04_b(
+                spec, target_dict, pos_text_for_04_b, detail_text_for_04_b,
+                positioning_basis=review_basis,
+                detail_basis=review_basis,
+            )
+        except Exception as e:
+            st.error(f"프롬프트 로드 실패: {type(e).__name__}: {e}")
+            st.stop()
+
+        with st.spinner("04_b 검수 중…"):
+            review_04_b = generate_both(
+                system_prompt, user_input,
+                claude_model=claude_model_04,
+                gemini_model=gemini_model_04,
+                max_tokens=16384,
+            )
+        ss["review_04_b"] = review_04_b
+        ss["review_04_b_basis"] = review_basis
+
+        # DB 저장 (04_a 행 id를 FK로)
+        try:
+            tid = ss["selected_target_db_id"]
+            detail_rows = storage.get_상세페이지(tid)
+            detail_id_map: dict[str, int | None] = {"claude": None, "gemini": None}
+            for row in detail_rows:
+                m = row.get("모델")
+                if m in detail_id_map and detail_id_map[m] is None:
+                    detail_id_map[m] = row.get("id")
+
+            saved_count = 0
+            for m in ("claude", "gemini"):
+                text = review_04_b.get(m, "") or ""
+                if not text:
+                    continue  # 호출 안 된 모델은 행 저장 X (옵션 3 정책)
+                did = detail_id_map.get(m)
+                if did is None:
+                    st.warning(f"{m}: 04_a 결과가 DB에 없어 04_b 저장 건너뜀")
+                    continue
+                report, refined = _extract_review_blocks(text)
+                storage.save_상세페이지_검수(
+                    detail_id=did,
+                    model=m,
+                    raw_output=text,
+                    검수_보고서=report,
+                    다듬은_콘티=refined,
+                )
+                saved_count += 1
+            if saved_count > 0:
+                st.success(f"04_b 저장 완료 ({saved_count}개 모델)")
+        except Exception as e:
+            st.error(f"04_b DB 저장 실패: {type(e).__name__}: {e}")
+
+review_04_b = ss.get("review_04_b")
+if review_04_b:
+    st.markdown("**04_b 검수 결과**")
+    cc4b, gc4b = _result_layout(claude_model_04, gemini_model_04)
+
+    def _render_review_panel(text: str, model_label: str):
+        if not text:
+            st.caption(f"_({model_label} 호출 안 됨)_")
+            return
+        report, refined = _extract_review_blocks(text)
+        if report:
+            with st.expander("📋 검수 보고서", expanded=True):
+                st.markdown(report)
+        if refined:
+            with st.expander("✨ 다듬은 콘티", expanded=False):
+                st.markdown(refined)
+        if not report and not refined:
+            st.warning("⚠️ 블록 마커(`---REVIEW_REPORT---` / `---REFINED_DRAFT---`) 누락 — 원본 출력 그대로 표시")
+            st.markdown(text)
+
+    if cc4b is not None:
+        with cc4b:
+            st.markdown(_model_header(
+                "🟠 Claude", claude_model_04, None,
+                lint_enabled=False,
+            ))
+            _render_review_panel(review_04_b.get("claude") or "", "claude")
+    if gc4b is not None:
+        with gc4b:
+            st.markdown(_model_header(
+                "🔵 Gemini", gemini_model_04, None,
+                lint_enabled=False,
+            ))
+            _render_review_panel(review_04_b.get("gemini") or "", "gemini")
 
 # ── Step 3-1: 04-1 이미지 디렉션 ───────────────────────────
 detail_04 = ss.get("detail_04")

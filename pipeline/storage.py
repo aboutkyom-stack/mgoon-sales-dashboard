@@ -53,16 +53,51 @@ class Storage(ABC):
     def clear_selected_in_run(self, run_id: int) -> None: ...
 
     @abstractmethod
-    def save_positioning(self, target_id: int, model: str, raw_output: str) -> int: ...
+    def save_positioning(
+        self,
+        target_id: int,
+        model: str,
+        raw_output: str,
+        category_objections: list | None = None,
+        rule_engine_inputs: dict | None = None,
+        rule_engine_flags: dict | None = None,
+        persuasion_method_candidates: list | None = None,
+    ) -> int: ...
 
     @abstractmethod
     def get_positioning(self, target_id: int) -> list[dict]: ...
 
     @abstractmethod
-    def save_상세페이지(self, target_id: int, model: str, raw_output: str) -> int: ...
+    def save_상세페이지(
+        self,
+        target_id: int,
+        model: str,
+        raw_output: str,
+        engine_plan: dict | None = None,
+        한_축_사슬: str | None = None,
+        설득_방식_주: str | None = None,
+        설득_방식_보조: list | None = None,
+    ) -> int: ...
 
     @abstractmethod
     def get_상세페이지(self, target_id: int) -> list[dict]: ...
+
+    # ── 04_b 상세페이지 검수 (옵션 3 토글 호출) ───────────
+    @abstractmethod
+    def save_상세페이지_검수(
+        self,
+        detail_id: int,
+        model: str,
+        raw_output: str,
+        검수_보고서: str | None = None,
+        다듬은_콘티: str | None = None,
+    ) -> int: ...
+
+    @abstractmethod
+    def get_상세페이지_검수(self, detail_id: int) -> list[dict]: ...
+
+    @abstractmethod
+    def delete_상세페이지_검수(self, review_id: int) -> None: ...
 
     @abstractmethod
     def save_이미지디렉션(
@@ -219,12 +254,30 @@ class SupabaseStorage(Storage):
     def clear_selected_in_run(self, run_id: int) -> None:
         _db().table("엠군_타겟").update({"선택됨": False}).eq("실행_id", run_id).execute()
 
-    def save_positioning(self, target_id: int, model: str, raw_output: str) -> int:
-        res = _db().table("엠군_포지셔닝").insert({
+    def save_positioning(
+        self,
+        target_id: int,
+        model: str,
+        raw_output: str,
+        category_objections: list | None = None,
+        rule_engine_inputs: dict | None = None,
+        rule_engine_flags: dict | None = None,
+        persuasion_method_candidates: list | None = None,
+    ) -> int:
+        payload: dict = {
             "타겟_id": target_id,
             "모델": model,
             "원본_출력": raw_output,
-        }).execute()
+        }
+        if category_objections is not None:
+            payload["category_objections"] = json.dumps(category_objections, ensure_ascii=False)
+        if rule_engine_inputs is not None:
+            payload["rule_engine_inputs"] = json.dumps(rule_engine_inputs, ensure_ascii=False)
+        if rule_engine_flags is not None:
+            payload["rule_engine_flags"] = json.dumps(rule_engine_flags, ensure_ascii=False)
+        if persuasion_method_candidates is not None:
+            payload["persuasion_method_candidates"] = json.dumps(persuasion_method_candidates, ensure_ascii=False)
+        res = _db().table("엠군_포지셔닝").insert(payload).execute()
         return res.data[0]["id"]
 
     def get_positioning(self, target_id: int) -> list[dict]:
@@ -238,12 +291,30 @@ class SupabaseStorage(Storage):
         return res.data or []
 
     # ── 04 상세페이지 ─────────────────────────────────────
-    def save_상세페이지(self, target_id: int, model: str, raw_output: str) -> int:
-        res = _db().table("엠군_상세페이지").insert({
+    def save_상세페이지(
+        self,
+        target_id: int,
+        model: str,
+        raw_output: str,
+        engine_plan: dict | None = None,
+        한_축_사슬: str | None = None,
+        설득_방식_주: str | None = None,
+        설득_방식_보조: list | None = None,
+    ) -> int:
+        payload: dict = {
             "타겟_id": target_id,
             "모델": model,
             "원본_출력": raw_output,
-        }).execute()
+        }
+        if engine_plan is not None:
+            payload["engine_plan"] = json.dumps(engine_plan, ensure_ascii=False)
+        if 한_축_사슬 is not None:
+            payload["한_축_사슬"] = 한_축_사슬
+        if 설득_방식_주 is not None:
+            payload["설득_방식_주"] = 설득_방식_주
+        if 설득_방식_보조 is not None:
+            payload["설득_방식_보조"] = json.dumps(설득_방식_보조, ensure_ascii=False)
+        res = _db().table("엠군_상세페이지").insert(payload).execute()
         return res.data[0]["id"]
 
     def get_상세페이지(self, target_id: int) -> list[dict]:
@@ -255,6 +326,40 @@ class SupabaseStorage(Storage):
             .execute()
         )
         return res.data or []
+
+    # ── 04_b 상세페이지 검수 (옵션 3 토글 호출) ───────────
+    def save_상세페이지_검수(
+        self,
+        detail_id: int,
+        model: str,
+        raw_output: str,
+        검수_보고서: str | None = None,
+        다듬은_콘티: str | None = None,
+    ) -> int:
+        payload: dict = {
+            "상세페이지_id": detail_id,
+            "모델": model,
+            "원본_출력": raw_output,
+        }
+        if 검수_보고서 is not None:
+            payload["검수_보고서"] = 검수_보고서
+        if 다듬은_콘티 is not None:
+            payload["다듬은_콘티"] = 다듬은_콘티
+        res = _db().table("엠군_상세페이지_검수").insert(payload).execute()
+        return res.data[0]["id"]
+
+    def get_상세페이지_검수(self, detail_id: int) -> list[dict]:
+        res = (
+            _db().table("엠군_상세페이지_검수")
+            .select("*")
+            .eq("상세페이지_id", detail_id)
+            .order("id", desc=True)
+            .execute()
+        )
+        return res.data or []
+
+    def delete_상세페이지_검수(self, review_id: int) -> None:
+        _db().table("엠군_상세페이지_검수").delete().eq("id", review_id).execute()
 
     # ── 04-1 이미지 디렉션 ─────────────────────────────────
     def save_이미지디렉션(

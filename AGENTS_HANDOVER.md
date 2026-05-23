@@ -71,7 +71,7 @@ C:\Users\kyum\Desktop\자동화 공장\
 │   ├── lecture_index.md                  ← G1~G14 강의 그룹 인덱스
 │   └── (기타 파일들)
 │
-└── 자동화 판매\
+└── 엠타트업식 판매/자동화형\
     ├── PLAN.md                           ← 전체 시스템 마스터 플랜
     ├── AGENTS_HANDOVER.md                ← ★ 이 파일 (인수인계 문서)
     │

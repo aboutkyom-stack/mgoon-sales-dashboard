@@ -1,8 +1,9 @@
-"""agents/0N_*/*.md 로더 + 프롬프트 조립.
+"""agents + _공통 두뇌 통합 로더 + 프롬프트 조립.
 
 각 에이전트 폴더에 존재하는 MD를 정해진 순서로 합쳐 시스템 프롬프트 생성.
-- 01/02: core + examples + qa_checklist (3종)
-- 03/04/05: core + examples + expressions + qa_checklist (4종)
+- 사고 파일(core·examples·expressions)은 `_공통 두뇌/{slug}/`에서 로드 (대화형과 공유)
+- 인터페이스 파일(qa_checklist)은 `자동화형/agents/{slug}/`에서 로드 (자동화 전용)
+- `_shared/data_contract.md`는 자동화형 agents/_shared 그대로 (자동화 전용 권위 규약)
 """
 from __future__ import annotations
 
@@ -12,13 +13,15 @@ from pathlib import Path
 from .settings import excluded_fields_for_stage
 
 AGENTS_DIR = Path(__file__).parent.parent / "agents"
+BRAIN_DIR = Path(__file__).parent.parent.parent / "_공통 두뇌"
 
 AGENT_KEYS = {
     "vision_pass":     "00_vision_pass",
     "deficit_target":  "01_deficit_target",
     "positioning":     "02_positioning",
     "naming":          "03_naming",
-    "detail_page":     "04_detail_page",
+    "detail_page":     "04_a_writing",       # 04 콘티 생성 (자동화 04 단계 본 작업)
+    "detail_review":   "04_b_review",        # 04 검수 (별도 호출용, 04_a 결과 검수)
     "image_direction": "04_1_image_direction",
     "channel":         "05_channel",
 }
@@ -40,11 +43,13 @@ def _filter_product(product: dict, stage: str, cfg: dict | None = None) -> dict:
 
 
 def load_agent_prompt(agent: str) -> str:
-    """agents/{slug}/ 안의 표준 MD들을 PROMPT_PART_ORDER 순서로 합쳐 반환.
+    """`_공통 두뇌/{slug}/`(사고) + `agents/{slug}/`(인터페이스)의 표준 MD들을
+    PROMPT_PART_ORDER 순서로 합쳐 반환.
 
-    존재하지 않는 파일은 건너뛴다 (02는 expressions.md 없음).
-    `_shared/data_contract.md`가 존재하면 모든 단계의 맨 앞에 prepend
-    (가격 권위·시각설명 처리 등 단계 공통 데이터 규약).
+    - 사고 파일(core·examples·expressions): `_공통 두뇌/{slug}/`에서 로드 (대화형과 공유)
+    - 인터페이스 파일(qa_checklist): `자동화형/agents/{slug}/`에서 로드 (자동화 전용)
+    - 존재하지 않는 파일은 건너뛴다 (02는 expressions.md 없음).
+    - `_shared/data_contract.md`(자동화형 agents/_shared)가 존재하면 모든 단계 맨 앞에 prepend.
     """
     slug = AGENT_KEYS.get(agent)
     if not slug:
@@ -54,31 +59,38 @@ def load_agent_prompt(agent: str) -> str:
 
     shared_contract = AGENTS_DIR / "_shared" / "data_contract.md"
     if shared_contract.exists():
-        chunks.append(f"=== _shared/data_contract.md ===\n{_read(shared_contract)}")
+        chunks.append(f"=== agents/_shared/data_contract.md ===\n{_read(shared_contract)}")
 
-    base = AGENTS_DIR / slug
+    brain_base = BRAIN_DIR / slug
+    auto_base = AGENTS_DIR / slug
     for fname in PROMPT_PART_ORDER:
-        path = base / fname
+        if fname == "qa_checklist.md":
+            path = auto_base / fname
+            label = f"agents/{slug}/{fname}"
+        else:
+            path = brain_base / fname
+            label = f"_공통 두뇌/{slug}/{fname}"
         if not path.exists():
             continue
-        prefix = ("\n\n" if chunks else "") + f"=== {slug}/{fname} ===\n"
+        prefix = ("\n\n" if chunks else "") + f"=== {label} ===\n"
         chunks.append(prefix + _read(path))
     if not chunks:
-        raise FileNotFoundError(f"no prompt MD found in {base}")
+        raise FileNotFoundError(f"no prompt MD found in {brain_base} or {auto_base}")
     return "".join(chunks)
 
 
 def load_vision_prompt(engine: str = "claude") -> str:
     """Vision Pass 시스템 프롬프트.
 
-    engine에 맞는 core_{engine}.md를 우선 로드.
-    없으면 공용 core.md로 fallback.
+    엔진별 분기 파일(core_{engine}.md)이 있으면 우선 사용.
+    공용 core.md는 `_공통 두뇌/00_vision_pass/`에서 로드 (대화형과 공유).
+    엔진별 분기 파일도 일단 `_공통 두뇌` → `agents` 순으로 탐색.
     """
-    base = AGENTS_DIR / "00_vision_pass"
-    specific = base / f"core_{engine}.md"
-    if specific.exists():
-        return _read(specific)
-    return _read(base / "core.md")
+    for base in (BRAIN_DIR / "00_vision_pass", AGENTS_DIR / "00_vision_pass"):
+        specific = base / f"core_{engine}.md"
+        if specific.exists():
+            return _read(specific)
+    return _read(BRAIN_DIR / "00_vision_pass" / "core.md")
 
 
 def build_vision_input(product: dict, cfg: dict | None = None) -> str:
@@ -130,11 +142,37 @@ def save_instruction(agent: str, content: str, variant: str | None = None) -> No
     path.write_text(content, encoding="utf-8")
 
 
+def _apply_with_fallback(template: str, sections: list[tuple[str, str, str]]) -> str:
+    """instruction.md 템플릿에 placeholder를 치환하되, 없으면 끝에 섹션으로 추가.
+
+    sections: [(placeholder_key, fallback_title, value), ...]
+      - placeholder_key: 중괄호 빼고 (예: 'product')
+      - fallback_title: placeholder 부재 시 추가할 섹션 제목 (예: '[제품 정보]'). 빈 문자면 fallback 안 함 (label류)
+      - value: 치환·삽입할 값
+
+    settings UI에서 사용자가 placeholder를 박은 경우 그쪽이 우선.
+    placeholder 안 박힌 경우(자동화 운영 안정성)에도 동작하도록 끝에 명시적 prepend.
+    """
+    out = template
+    appendix: list[str] = []
+    for key, title, value in sections:
+        ph = "{" + key + "}"
+        if ph in out:
+            out = out.replace(ph, value)
+        elif title and value:
+            appendix.append(f"{title}\n{value}")
+    if appendix:
+        out = out.rstrip() + "\n\n" + "\n\n".join(appendix)
+    return out
+
+
 def build_user_input_01(product: dict, cfg: dict | None = None) -> str:
     """01_deficit_target용 유저 프롬프트. 정적 지시문은 instruction.md에서 로드."""
     product_block = json.dumps(_filter_product(product, "01", cfg), ensure_ascii=False, indent=2)
     template = load_instruction("deficit_target")
-    return template.replace("{product}", product_block)
+    return _apply_with_fallback(template, [
+        ("product", "[제품 정보]", product_block),
+    ])
 
 
 def build_user_input_02(product: dict, target: dict, cfg: dict | None = None) -> str:
@@ -142,7 +180,10 @@ def build_user_input_02(product: dict, target: dict, cfg: dict | None = None) ->
     product_block = json.dumps(_filter_product(product, "02", cfg), ensure_ascii=False, indent=2)
     target_block = json.dumps(target, ensure_ascii=False, indent=2)
     template = load_instruction("positioning")
-    return template.replace("{product}", product_block).replace("{target}", target_block)
+    return _apply_with_fallback(template, [
+        ("product", "[제품 정보]", product_block),
+        ("target", "[01에서 확정된 타겟]", target_block),
+    ])
 
 
 def build_user_input_04(product: dict, target: dict, positioning_text: str,
@@ -155,13 +196,41 @@ def build_user_input_04(product: dict, target: dict, positioning_text: str,
     target_block = json.dumps(target, ensure_ascii=False, indent=2)
     basis_label = f" (기준: {positioning_basis})" if positioning_basis else ""
     template = load_instruction("detail_page")
-    return (
-        template
-        .replace("{product}", product_block)
-        .replace("{target}", target_block)
-        .replace("{positioning_basis_label}", basis_label)
-        .replace("{positioning}", positioning_text)
-    )
+    return _apply_with_fallback(template, [
+        ("product", "[제품 정보]", product_block),
+        ("target", "[01에서 확정된 타겟]", target_block),
+        ("positioning_basis_label", "", basis_label),  # label류 — fallback 안 함
+        ("positioning", f"[02 포지셔닝 결과{basis_label}]", positioning_text),
+    ])
+
+
+def build_user_input_04_b(
+    product: dict,
+    target: dict,
+    positioning_text: str,
+    detail_text: str,
+    positioning_basis: str = "",
+    detail_basis: str = "",
+    cfg: dict | None = None,
+) -> str:
+    """04_b_review용 유저 프롬프트.
+
+    입력: 제품 + 01 선택 타겟 + 02 포지셔닝(basis 1개) + 04_a 콘티(basis 1개, 검수 대상).
+    04_a가 뱉은 콘티를 풀세트 + ENGINE_PLAN 기준으로 검수하고 다듬은 콘티를 반환한다.
+    """
+    product_block = json.dumps(_filter_product(product, "04", cfg), ensure_ascii=False, indent=2)
+    target_block = json.dumps(target, ensure_ascii=False, indent=2)
+    pos_label = f" (기준: {positioning_basis})" if positioning_basis else ""
+    det_label = f" (기준: {detail_basis})" if detail_basis else ""
+    template = load_instruction("detail_review")
+    return _apply_with_fallback(template, [
+        ("product", "[제품 정보]", product_block),
+        ("target", "[01에서 확정된 타겟]", target_block),
+        ("positioning_basis_label", "", pos_label),
+        ("positioning", f"[02 포지셔닝 결과{pos_label}]", positioning_text),
+        ("detail_basis_label", "", det_label),
+        ("detail", f"[04_a 상세페이지 콘티 (검수 대상){det_label}]", detail_text),
+    ])
 
 
 def build_user_input_04_1(
@@ -183,15 +252,14 @@ def build_user_input_04_1(
     pos_label = f" (기준: {positioning_basis})" if positioning_basis else ""
     det_label = f" (기준: {detail_basis})" if detail_basis else ""
     template = load_instruction("image_direction")
-    return (
-        template
-        .replace("{product}", product_block)
-        .replace("{target}", target_block)
-        .replace("{positioning_basis_label}", pos_label)
-        .replace("{positioning}", positioning_text)
-        .replace("{detail_basis_label}", det_label)
-        .replace("{detail}", detail_text)
-    )
+    return _apply_with_fallback(template, [
+        ("product", "[제품 정보]", product_block),
+        ("target", "[01에서 확정된 타겟]", target_block),
+        ("positioning_basis_label", "", pos_label),
+        ("positioning", f"[02 포지셔닝 결과{pos_label}]", positioning_text),
+        ("detail_basis_label", "", det_label),
+        ("detail", f"[04 상세페이지 콘티{det_label}]", detail_text),
+    ])
 
 
 def build_user_input_03(
@@ -231,16 +299,20 @@ def build_user_input_03(
         ch_label = f" (기준: {channel_basis})" if channel_basis else ""
         channel_section = f"\n\n[05 채널·물길 전략{ch_label}]\n{channel_text}"
 
-    template = load_instruction("naming", variant=naming_type)
-    return (
-        template
-        .replace("{product}", product_block)
-        .replace("{target}", target_block)
-        .replace("{positioning_basis_label}", pos_label)
-        .replace("{positioning}", positioning_text)
-        .replace("{detail_section}", detail_section)
-        .replace("{channel_section}", channel_section)
-    )
+    # 03은 variant 분기 (제품명/브랜드명). 변형 파일 없으면 기본 instruction.md로 fallback
+    try:
+        template = load_instruction("naming", variant=naming_type)
+    except FileNotFoundError:
+        template = load_instruction("naming")
+
+    return _apply_with_fallback(template, [
+        ("product", "[제품 정보]", product_block),
+        ("target", "[01에서 확정된 타겟]", target_block),
+        ("positioning_basis_label", "", pos_label),
+        ("positioning", f"[02 포지셔닝 결과{pos_label}]", positioning_text),
+        ("detail_section", "", detail_section),  # 이미 빈 문자열이면 안 들어감
+        ("channel_section", "", channel_section),
+    ])
 
 
 def build_user_input_05(product: dict, target: dict, positioning_text: str,

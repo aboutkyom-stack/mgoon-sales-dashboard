@@ -110,7 +110,9 @@ if st.button("← 목록으로", key="back_btn"):
 st.divider()
 
 # ── Vision Pass 공통 상수/유틸 ────────────────────────────
+# 사고(core·core_*)는 _공통 두뇌, 자동화 전용 분기 파일이 있으면 agents fallback.
 _AGENTS_DIR    = Path(__file__).parent.parent / "agents" / "00_vision_pass"
+_BRAIN_VP_DIR  = Path(__file__).parent.parent.parent / "_공통 두뇌" / "00_vision_pass"
 # 모델 목록은 pipeline.models_config 에서 import (단일 소스)
 _CLAUDE_MODELS = CLAUDE_VP_MODELS
 _GEMINI_MODELS = GEMINI_VP_MODELS
@@ -121,10 +123,18 @@ def _vp_family(model: str) -> str:
     return _vp_family_of(model)
 
 
+def _vp_resolve(filename: str) -> Path:
+    """파일을 _공통 두뇌 우선, 자동화형 agents fallback으로 해석."""
+    p = _BRAIN_VP_DIR / filename
+    if p.exists():
+        return p
+    return _AGENTS_DIR / filename
+
+
 def _vp_prompt_path(model: str) -> Path:
     fam = _vp_family(model)
-    p = _AGENTS_DIR / f"core_{fam}.md"
-    return p if p.exists() else _AGENTS_DIR / "core.md"
+    p = _vp_resolve(f"core_{fam}.md")
+    return p if p.exists() else _vp_resolve("core.md")
 
 
 def _vp_load_prompt(model: str) -> str:
@@ -133,8 +143,8 @@ def _vp_load_prompt(model: str) -> str:
 
 def _vp_video_prompt_path() -> Path:
     """동영상 비전패스 전용 프롬프트 경로. 파일 없으면 이미지 Gemini 프롬프트로 폴백."""
-    p = _AGENTS_DIR / "core_gemini_video.md"
-    return p if p.exists() else _AGENTS_DIR / "core_gemini.md"
+    p = _vp_resolve("core_gemini_video.md")
+    return p if p.exists() else _vp_resolve("core_gemini.md")
 
 
 def _vp_load_video_prompt() -> str:
