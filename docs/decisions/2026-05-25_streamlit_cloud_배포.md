@@ -41,7 +41,7 @@
 |---|---|
 | **호스팅** | Streamlit Cloud (Streamlit Inc. 제공) |
 | **요금** | 무료 플랜 |
-| **GitHub repo** | **Public** (코드 노출 OK — 동료에게 보여줘도 무방, 민감 정보는 모두 .gitignore) |
+| **GitHub repo** | **Public** (코드 노출 OK — 동료에게 보여줘도 무방, 민감 정보는 모두 .gitignore) ⚠️ 초기 Private 시도했으나 Streamlit Community Cloud 무료 플랜이 Private repo 미지원 → Public으로 확정 |
 | **앱 접근 제한** | **Restricted access** — 사용자 + 동료 Google 이메일만 허용 |
 | **자동 배포** | `git push` 시 Streamlit Cloud가 자동 pull → 빌드 → 재배포 |
 
@@ -62,9 +62,9 @@
 
 | 항목 | 결정 |
 |---|---|
-| **OAuth client** | **본인 Google 계정으로 신규 발급** (현재 동료 계정 발급 OAuth client 사용 중) |
-| **Drive 데이터 계정** | 본인 계정 신규 추가 + 동료 계정(donnamoo, voyager) **점진적 전환** |
-| **전환 전략** | 본인 계정 추가 → 안정화 → 동료 계정 코드에서 제거 |
+| **OAuth client** | ~~본인 Google 계정으로 신규 발급~~ → **동료 계정(voyager/donnamoo) ID/비번 인수, 기존 credentials/ 그대로 사용** (신규 발급 없음) |
+| **Drive 데이터 계정** | ~~본인 계정 신규 추가~~ → **동료 계정 그대로 사용** (신규 계정 추가 없음) |
+| **전환 전략** | 해당 없음 — 동료 계정 그대로 운영 |
 | **OAuth client 유형** | **데스크톱 앱** 유지 (방식 B: 로컬 스크립트 갱신 — 본인 계정이라 사용자가 직접 갱신) |
 | **모드** | Testing 그대로 (Production 전환은 verification 부담 큼) |
 | **만료 주기** | 공식 7일 (활성 사용 시 더 가는 경우도 있음) |
@@ -156,6 +156,17 @@ CREATE INDEX idx_편집세션_상품 ON 편집_세션(상품_id);
 ## 3. 다음 세션 작업 체크리스트
 
 > 새 채팅방 시작 시 이 섹션을 그대로 작업 목록으로 사용한다.
+
+### Phase 0 — 선검증 ✅ 완료 (2026-05-25)
+
+- [x] GitHub Public repo 생성: `aboutkyom-stack/auto-sales`
+- [x] 코드 push (master 브랜치)
+- [x] share.streamlit.io 가입 (aboutkyom@gmail.com)
+- [x] 앱 배포: `https://auto-sales-wktrade.streamlit.app`
+- [x] Restricted access: aboutkyom / voyager / donnamoo 3개 이메일
+- [x] Secrets 등록 (MY_SUPABASE_*, API 키, APP_ROLE=partner)
+- [x] 앱 정상 동작 확인 (DB·이미지·파이프라인)
+- [x] 동료 접속 확인 (sign in 후 접근 가능)
 
 ### Phase 1 — DB 스키마 & 백엔드 (작은 단위)
 
@@ -276,10 +287,10 @@ CREATE INDEX idx_편집세션_상품 ON 편집_세션(상품_id);
 
 ## 6. 핵심 사전 확인 사항 (다음 세션 시작 시)
 
-- [ ] 기존 `drive_accounts` 테이블 스키마 확인 — 컬럼 추가 vs 신규 테이블 분리 결정
-- [ ] 현재 git remote 상태 확인 — GitHub repo 아직 연결 안 됨
-- [ ] OAuth client 본인 명의 발급 여부 확인 (사용자 직접 작업)
-- [ ] Streamlit Cloud 가입 여부 확인 (사용자 직접 작업)
+- [x] 기존 `drive_accounts` 테이블 스키마 확인 → 우리 DB에 없음 → 신규 `drive_auth` 테이블로 결정 (옵션 b)
+- [x] git remote 상태 확인 → `https://github.com/aboutkyom-stack/auto-sales.git` 연결됨
+- [x] OAuth client → 동료 credentials 그대로 인수 (신규 발급 없음)
+- [x] Streamlit Cloud 가입 → 완료, 앱 배포 및 동료 접속 확인
 
 ---
 
