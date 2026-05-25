@@ -201,9 +201,30 @@ def insert_상품(data: dict) -> dict:
     return res.data[0] if res.data else {}
 
 
-def update_상품(상품_id: int, data: dict) -> None:
-    """상품 필드 업데이트."""
-    _client().table("상품").update(data).eq("id", 상품_id).execute()
+def update_상품(
+    상품_id: int,
+    data: dict,
+    original_수정일: str | None = None,
+) -> bool:
+    """상품 필드 업데이트.
+
+    낙관적 락:
+        original_수정일이 주어지면 `수정일`이 일치하는 row만 update (동시편집 충돌 감지).
+        - 매칭되어 1행 이상 update되면 True
+        - 매칭 실패(다른 사용자가 먼저 수정함)면 False
+        - original_수정일=None이면 기존 동작 그대로 (항상 True)
+
+    수정일 자동 갱신:
+        DB 트리거(상품_수정일_갱신)가 모든 UPDATE에서 NEW.수정일 = NOW()로 강제.
+        호출 측에서 data["수정일"]을 명시할 필요 없음 (지정해도 트리거에 덮어씌워짐).
+    """
+    q = _client().table("상품").update(data).eq("id", 상품_id)
+    if original_수정일 is not None:
+        q = q.eq("수정일", original_수정일)
+    res = q.execute()
+    if original_수정일 is not None:
+        return bool(res.data)
+    return True
 
 
 def get_account_folder(상품_id: int, 계정: str) -> str | None:
@@ -421,6 +442,87 @@ def list_계정_values() -> list[str]:
 def delete_파일(파일_id: int) -> None:
     """상품_파일 레코드 삭제."""
     _client().table("상품_파일").delete().eq("id", 파일_id).execute()
+
+
+# ── drive_auth (OAuth 토큰 DB 동기화) ─────────────────────
+
+def get_drive_token(account_name: str) -> dict | None:
+    """drive_auth 테이블에서 토큰 정보 조회. 없으면 None.
+
+    반환 dict 키: account_name, refresh_token, client_id, client_secret, token_uri, scopes, updated_at.
+    """
+    try:
+        res = (
+            _client()
+            .table("drive_auth")
+            .select("*")
+            .eq("account_name", account_name)
+            .limit(1)
+            .execute()
+        )
+        return res.data[0] if res.data else None
+    except Exception:
+        return None
+
+
+def upsert_drive_token(account_name: str, token_data: dict) -> dict:
+    """drive_auth UPSERT. account_name 기준 충돌 해소.
+
+    token_data 인식 키: refresh_token, client_id, client_secret, token_uri, scopes.
+    updated_at은 자동으로 현재 시각으로 설정.
+    """
+    from datetime import datetime, timezone
+
+    payload: dict = {"account_name": account_name}
+    for k in ("refresh_token", "client_id", "client_secret", "token_uri", "scopes"):
+        if k in token_data and token_data[k] is not None:
+            payload[k] = token_data[k]
+    payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    res = (
+        _client()
+        .table("drive_auth")
+        .upsert(payload, on_conflict="account_name")
+        .execute()
+    )
+    return res.data[0] if res.data else {}
+
+
+# ── 편집_세션 (동시편집 보호 — 사회적 조정) ────────────────
+
+def upsert_편집_세션(상품_id: int, 사용자명: str) -> None:
+    """편집 세션 UPSERT — (상품_id, 사용자명) 충돌 시 마지막_활동시각만 갱신."""
+    from datetime import datetime, timezone
+
+    _client().table("편집_세션").upsert({
+        "상품_id": 상품_id,
+        "사용자명": 사용자명,
+        "마지막_활동시각": datetime.now(timezone.utc).isoformat(),
+    }, on_conflict="상품_id,사용자명").execute()
+
+
+def get_active_편집_세션(
+    상품_id: int,
+    exclude_사용자명: str | None = None,
+    ttl_min: int = 5,
+) -> list[dict]:
+    """ttl_min 분 이내 활성 편집 세션 목록. exclude_사용자명은 결과에서 제외.
+
+    동시편집 배지(상단 알림)용 — 다른 사용자가 같은 상품을 편집 중인지 확인.
+    """
+    from datetime import datetime, timezone, timedelta
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=ttl_min)).isoformat()
+    q = (
+        _client()
+        .table("편집_세션")
+        .select("*")
+        .eq("상품_id", 상품_id)
+        .gte("마지막_활동시각", cutoff)
+    )
+    if exclude_사용자명:
+        q = q.neq("사용자명", exclude_사용자명)
+    return q.execute().data or []
 
 
 def upsert_파일(상품_id: int, files: list[dict], 계정: str) -> int:
