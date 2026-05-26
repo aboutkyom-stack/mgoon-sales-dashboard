@@ -97,6 +97,24 @@
   - `자동화형/agents/00_vision_pass/merge.md`, `extract_spec.md` — Vision Merge·Spec Extract 자동화 전용 프롬프트
 - **학습**: 백업 시점에 따라 파일 누락 가능. "백업본에도 없음 → dead code 추정"은 위험. **여러 시점 백업 비교 + 코드의 실제 호출 패턴 확인** 후 우선순위 판정해야.
 
+### 🟢 스펙 탭 저장 버튼 floating (sticky bottom / fixed) — 2026-05-27 시도 실패, 보류
+
+- **상황**: [pages/2_product_edit.py](../pages/2_product_edit.py) 스펙 탭의 `💾 저장` / `취소` 버튼이 페이지 최하단(JSON expander 위)에만 있어, 위쪽 필드 편집 후 저장하려면 매번 스크롤 끝까지 내려야 함. 충돌 경고 배너도 저장 버튼 직후에 위치해 사용자가 즉시 인지 못 함.
+- **목표**: 저장/취소 버튼이 viewport 하단에 floating으로 항상 보이게.
+- **2026-05-27 시도 내역 (모두 실패)**:
+  1. `position: sticky; bottom: 0;` + 마커 div(`.sticky-save-marker-tab2`) + `:has()` next-sibling selector — 효과 없음 (DOM 변화 무, 버튼 그대로 페이지 끝)
+  2. `position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);` + backdrop-filter blur + viewport 중앙 정렬 — 효과 없음 (동일)
+- **추정 원인** (확인 안 됨):
+  - Streamlit이 `<style>` 태그를 inline 적용 안 하고 head 등으로 이동시킬 가능성
+  - selector(`div[data-testid="stElementContainer"]:has(.sticky-save-marker-tab2) + div[data-testid="stElementContainer"]`) 가 Streamlit 1.44 실제 DOM과 불일치
+  - `:has()` 셀렉터 자체는 브라우저 지원되지만 Streamlit 내부 컨테이너 중첩 구조가 예상과 다를 수 있음
+- **다음 시도 방향** (CSS 일괄 작업 시):
+  1. **CSS 주입 자체 검증**: `<style>body{background:red !important}</style>` 같은 자명한 CSS 주입해서 적용되는지부터 확인 (안 되면 주입 방식 문제, 되면 selector 문제)
+  2. **브라우저 개발자 도구로 실제 DOM 트리 확인**: 저장 버튼 영역의 부모 체인을 정확히 보고 selector 작성
+  3. **외부 패키지 검토**: `streamlit-extras` 의 `bottom_container` 등 fixed positioning 지원 컴포넌트
+  4. **st.empty + container 트릭**: page 상단에 placeholder 만들고 늦게 그리는 방식, 또는 `st.sidebar` 활용 검토
+- **사용자 결정 (2026-05-27)**: CSS는 우선순위 낮음. 다른 UI/CSS 작업과 함께 일괄 처리. 코드의 CSS 주입 / 마커 div / spacer div 잔재는 정리 (코드 깨끗하게 유지).
+
 ---
 
 ## 추가 작업 발견 시

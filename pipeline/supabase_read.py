@@ -542,6 +542,14 @@ def get_active_편집_세션(
     return q.execute().data or []
 
 
+def delete_편집_세션(상품_id: int, 사용자명: str) -> None:
+    """편집 세션 row 즉시 삭제 — 페이지 명시적 종료 시 호출.
+
+    상대편 화면에서 ttl 기다리지 않고 즉시 "편집 중 아님"으로 반영되게.
+    """
+    _client().table("편집_세션").delete().eq("상품_id", 상품_id).eq("사용자명", 사용자명).execute()
+
+
 def upsert_파일(상품_id: int, files: list[dict], 계정: str) -> int:
     """Drive 스캔 결과를 상품_파일에 upsert. 드라이브_파일_id 기준 중복 방지.
 

@@ -33,6 +33,7 @@ from pipeline.supabase_read import (
     delete_비전패스_이력,
     delete_파일,
     delete_상품,
+    delete_편집_세션,
     get_active_편집_세션,
     get_files,
     get_product,
@@ -92,12 +93,43 @@ product_id = st.session_state.get("edit_product_id")
 row        = get_product(product_id) or {}
 _is_temp   = row.get("제품명", "").startswith("임시_")
 
+# ── 낙관적 락 — _orig_ts 고정 ────────────────────────────
+# 페이지 첫 로드 시 row.수정일을 session_state에 락으로 저장.
+# 이후 rerun에서도 이 값을 고정 사용해야 진짜 낙관적 락이 동작한다.
+# (자동 갱신 X — 같은 페이지에 머무는 중 row가 새로 fetch되더라도 락은 그대로 유지.
+#  그래야 동료가 그 사이 저장한 경우 충돌 감지됨. 명시적으로 "← 목록으로" / _cancel
+#  / 충돌 메시지 안의 "다시 시도" 버튼에서만 락 해제.)
+_lock_key = f"_lock_orig_ts__{product_id}" if product_id else None
+_conflict_key = f"_save_conflict__{product_id}" if product_id else None
+if not _is_temp and _lock_key and _lock_key not in st.session_state:
+    st.session_state[_lock_key] = row.get("수정일")
+
 if _is_temp:
     st.title(f"🆕 신규 제품 등록 — #{product_id}")
     st.caption("🗄️ DB — 상품 테이블  ·  **임시 저장 상태** (스펙 탭에서 제품명 수정 후 저장하세요)")
 else:
     st.title(f"✏️ 제품 수정 — #{product_id}")
     st.caption("🗄️ DB — 상품 테이블")
+
+# 저장 충돌 배너 — _save 직후뿐 아니라 이후 rerun에서도 유지
+if not _is_temp and _conflict_key and st.session_state.get(_conflict_key):
+    st.warning(
+        "⚠️ 다른 사용자가 먼저 저장했습니다.\n\n"
+        "안전을 위해 당신이 수정/입력한 값은 저장되지 않았습니다.\n\n"
+        "페이지를 새로고침하여 최신 값을 불러온 후 다시 시도하세요.\n\n"
+        "(페이지를 이탈하면 값이 사라지니 수정한 필드 값은 따로 메모해두세요.)\n\n"
+        "(페이지를 새로고침 해도 되고, 다른 페이지에 다녀와도 됩니다.)"
+    )
+    # 명시적 "다시 시도" 버튼 — 페이지 이탈 없이 동료 최신값 받아 락 갱신
+    if st.button(
+        "🔄 동료 최신값 받기 / 다시 시도",
+        key="btn_accept_others_save",
+        help="DB의 최신 수정일로 락을 다시 잡습니다. 화면 위쪽 필드 값들도 동료의 최신값으로 갱신됩니다. "
+             "(주의: 화면에서 직접 입력한 값은 사라지니 먼저 메모하세요.)",
+    ):
+        st.session_state.pop(_lock_key, None)
+        st.session_state.pop(_conflict_key, None)
+        st.rerun()
 
 # ── 동시편집 보호 (사회적 조정 + 낙관적 락은 _save 등에서) ──
 # 임시 레코드는 한 사용자만 다루므로 편집 세션 등록 skip
@@ -113,7 +145,9 @@ if not _is_temp:
             pass
 
     try:
-        _others = get_active_편집_세션(product_id, exclude_사용자명=_current_username, ttl_min=5)
+        # ttl 1분 — 활동 중인 사용자는 30초 debounce 안에 다시 upsert되어 안 사라짐.
+        # 사이드바 등으로 페이지를 떠나 비활성 상태가 1분 지나면 상대편에서 사라짐.
+        _others = get_active_편집_세션(product_id, exclude_사용자명=_current_username, ttl_min=1)
     except Exception:
         _others = []
     if _others:
@@ -135,6 +169,17 @@ with _btn_col1:
             except Exception:
                 pass
             st.session_state.pop("_temp_product_id", None)
+        # 페이지 이탈 — 락/충돌 플래그 정리 (다음 진입 시 새 row 수정일로 락 재설정)
+        if product_id:
+            st.session_state.pop(f"_lock_orig_ts__{product_id}", None)
+            st.session_state.pop(f"_save_conflict__{product_id}", None)
+            # 편집_세션 row 즉시 삭제 — 상대편에서 ttl 기다리지 않고 즉시 반영
+            if not _is_temp:
+                try:
+                    delete_편집_세션(product_id, _current_username)
+                    st.session_state.pop("_edit_session_last_upsert", None)
+                except Exception:
+                    pass
         st.session_state.pop("edit_product_id", None)
         st.session_state.pop("edit_mode", None)
         st.switch_page("pages/1_products.py")
@@ -206,23 +251,47 @@ def _fmt_dt(ts: str | None) -> str:
 
 # ── 공통 저장/취소 유틸 ──────────────────────────────────
 def _save(payload: dict) -> None:
-    """스펙·판매자정보 payload를 DB에 저장. 낙관적 락(임시 레코드 제외)."""
+    """스펙·판매자정보 payload를 DB에 저장. 낙관적 락(임시 레코드 제외).
+
+    _orig_ts는 페이지 첫 로드 시 session_state에 저장된 값을 고정 사용한다
+    (`_lock_orig_ts__{pid}`). 저장 성공 시 락 키를 삭제해 다음 rerun에서
+    새 row의 수정일로 다시 락이 잡히게 한다.
+    """
     if not payload.get("제품명", "").strip():
         st.error("제품명은 필수입니다.")
         return
     # 임시 레코드는 한 사용자만 다루므로 락 생략
-    _orig_ts = None if _is_temp else row.get("수정일")
+    if _is_temp:
+        _orig_ts = None
+    else:
+        # 락 키가 없으면(예외적 경로) row.수정일을 fallback으로 사용
+        _orig_ts = st.session_state.get(_lock_key) if _lock_key else None
+        if _orig_ts is None:
+            _orig_ts = row.get("수정일")
     try:
         ok = update_상품(product_id, payload, original_수정일=_orig_ts)
         if not ok:
+            # 충돌 플래그 — 이번 호출 직후 + 이후 rerun 모두에서 배너 유지
+            if product_id:
+                st.session_state[f"_save_conflict__{product_id}"] = True
+            # 토스트 — 화면 어디에 있든 우상단에 즉시 알림
+            st.toast("⚠️ 저장 실패 — 다른 사용자가 먼저 저장했습니다.", icon="⚠️")
             st.warning(
-                "⚠️ 다른 사용자가 먼저 저장했습니다. "
-                "새로고침 후 입력 내용을 다시 옮겨 시도하세요."
+                "⚠️ 다른 사용자가 먼저 저장했습니다.\n\n"
+                "안전을 위해 당신이 수정/입력한 값은 저장되지 않았습니다.\n\n"
+                "페이지를 새로고침하여 최신 값을 불러온 후 다시 시도하세요.\n\n"
+                "(페이지를 이탈하면 값이 사라지니 수정한 필드 값은 따로 메모해두세요.)\n\n"
+                "(페이지를 새로고침 해도 되고, 다른 페이지에 다녀와도 됩니다.)"
             )
             return
         if not payload["제품명"].startswith("임시_"):
             st.session_state.pop("_temp_product_id", None)
         st.session_state.pop("_spec_override", None)
+        # 저장 성공 — 락/충돌 플래그 클리어 (다음 rerun에서 새 수정일로 락 재설정)
+        if _lock_key:
+            st.session_state.pop(_lock_key, None)
+        if product_id:
+            st.session_state.pop(f"_save_conflict__{product_id}", None)
         st.success("저장 완료!")
         st.rerun()
     except Exception as _se:
@@ -312,6 +381,16 @@ def _cancel() -> None:
         except Exception:
             pass
     st.session_state.pop("_temp_product_id", None)
+    # 페이지 이탈 — 락/충돌 플래그 정리 + 편집_세션 row 즉시 삭제
+    if product_id:
+        st.session_state.pop(f"_lock_orig_ts__{product_id}", None)
+        st.session_state.pop(f"_save_conflict__{product_id}", None)
+        if not _is_temp:
+            try:
+                delete_편집_세션(product_id, _current_username)
+                st.session_state.pop("_edit_session_last_upsert", None)
+            except Exception:
+                pass
     st.session_state.pop("edit_product_id", None)
     st.session_state.pop("edit_mode", None)
     st.switch_page("pages/1_products.py")

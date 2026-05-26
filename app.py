@@ -19,6 +19,7 @@ pg = st.navigation(
         ],
         "시스템": [
             st.Page("pages/0_settings.py", title="⚙️ 설정"),
+            st.Page("pages/5_drive_dashboard.py", title="☁️ Drive 계정"),
         ],
         "테스트": [
             st.Page("pages/9_vision_test.py", title="🔬 Vision Pass 테스트"),

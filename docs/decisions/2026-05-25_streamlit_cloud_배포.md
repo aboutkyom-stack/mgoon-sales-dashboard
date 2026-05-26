@@ -223,7 +223,10 @@ CREATE INDEX idx_편집세션_상품 ON 편집_세션(상품_id);
 - **OAuth 갱신 방식 A (Streamlit Cloud 내장 OAuth 갱신 페이지)** — 방식 B(로컬 스크립트)가 너무 불편할 때
 - **다인 운영 대비 사용자명 식별자 강화** (현재 owner/partner 2값)
 - **Drive 자동 분배 로직** — 잔여 용량 가장 많은 계정 자동 선택 (PROJECT_STATUS.md 기존 backlog와 동일)
-- **(2026-05-27 추가) Drive 대시보드 안 OAuth callback 통합** — 동료가 대시보드에서 직접 재인증 가능하게. Streamlit Cloud redirect URI 등록 + `flow.fetch_token` 통합 필요. 현재 1차는 가이드 expander만.
+- **(2026-05-27 추가) Drive 대시보드 안 OAuth callback 통합 — 동료 측 + owner 측 양쪽**
+  - **동료 측**: Drive 대시보드 안 "🔄 재인증" 버튼 → Streamlit Cloud에서 Google OAuth flow → `drive_auth` DB 자동 업데이트. 동료가 자기 손으로 자기 계정 토큰 갱신.
+  - **owner 측**: 같은 페이지에 "🔄 내 계정 재인증" 버튼 → 로컬 브라우저로 OAuth flow → DB 갱신. 현재 `scripts/refresh_oauth_token.py` 단독 실행 방식을 페이지 버튼 클릭으로 대체. (사용자 요청: "py 파일 직접 실행은 너무 번거롭다")
+  - 구현: Streamlit Cloud redirect URI 등록 + `flow.fetch_token` 통합 + 환경 분기(`is_streamlit_cloud()`)로 redirect URL 결정. 현재 1차는 가이드 expander만.
 - **(2026-05-27 추가) Drive 토큰 만료 임박 표시** — `drive_auth.updated_at` 기준 N일 경과 시 ⚠️ 배지. OAuth 7일 만료 가정 + 활성 사용 시 연장 케이스 처리.
 - **(2026-05-27 추가) 편집_세션 만료 row 정리** — 현재 ttl 5분 필터로 무시만 함, row 누적. 페이지 진입 시 또는 cron으로 정기 청소.
 

@@ -1419,20 +1419,48 @@ git 커밋: `351a514 feat: partner 모드 + 엠군작업대상 필드 추가`
 2. **운영 검증이 끝났다면**: 사용자가 `git push` 후 Streamlit Cloud 자동 재배포 확인
 3. **검증이 안 됐다면**: 로컬 Streamlit 재시작 → 제품 수정 페이지 + Drive 대시보드 둘러보기
 
+### 운영 검증 결과 (2026-05-27 사용자 실시) — 초기 발견 (이후 후속 세션에서 모두 해결됨)
+
+| 항목 | 초기 결과 |
+|---|---|
+| 두 사용자 편집 알림 배지 (로컬 8501=owner / 8502=partner) | ✅ 정상 |
+| 두 창에서 동시 저장 시 충돌 경고 | ❌ 후속 fix에서 해결 (아래 "후속 fix 완료" 참조) |
+| Drive 대시보드 사이드바 노출 | ❌ `app.py` `st.navigation` 미등록 — 후속 fix에서 해결 |
+
+### ✅ 후속 fix 완료 (2026-05-27 후속 세션) — **사용자 검증 통과**
+
+#### 이슈 1: 동시편집 충돌 보호 — 해결
+
+**근본 원인**: `pages/2_product_edit.py` 의 `row = get_product(product_id)` 가 매 rerun마다 새로 fetch → 후행 저장 시점에 row.수정일이 이미 선행 저장으로 갱신되어 있어 `_orig_ts = row.get("수정일")` 이 새 수정일을 잡음 → 낙관적 락 무력화.
+
+**최종 적용 fix**:
+1. **`_orig_ts` 락 고정** — 페이지 첫 진입 시 `session_state["_lock_orig_ts__{pid}"]` 에 row.수정일 저장. 이후 rerun에서도 고정 사용. ([2_product_edit.py:96-105](pages/2_product_edit.py:96))
+2. **`_save()` 함수** — 위 락 키에서 `_orig_ts` 읽음. 충돌 감지 시 `session_state["_save_conflict__{pid}"]` 플래그 저장 + `st.toast()` 우상단 즉시 알림. 성공 시 락+플래그 클리어.
+3. **충돌 메시지 사용자 원문 채택** — 이전 "내용 복사해 두고 ← 목록으로 → 다시 진입" 문구가 모호하다는 피드백 → "안전을 위해 ... 저장되지 않았습니다. 페이지를 새로고침하여 ..." 로 교체.
+4. **"🔄 동료 최신값 받기 / 다시 시도" 버튼** — 충돌 배너 아래 명시적 버튼. 클릭 시 락+플래그 클리어 → rerun → 새 수정일로 락 재설정. ([2_product_edit.py:120-130](pages/2_product_edit.py:120))
+5. **자동 갱신 로직은 폐기** — 한 차례 "다녀와도 깨끗" UX를 위해 `row.수정일 != 락` 이면 자동으로 락 갱신하는 로직을 추가했으나, 이게 fix 1을 무력화시켜 같은 페이지에 머무는 중 동료 저장 → 자기 저장 시 충돌 안 잡히는 **버그**가 됨. 제거하고 명시적 버튼 방식으로 전환.
+
+#### 이슈 2: Drive 대시보드 사이드바 — 해결
+
+`app.py` "시스템" 그룹에 `st.Page("pages/5_drive_dashboard.py", title="☁️ Drive 계정")` 추가. ([app.py:21](app.py:21))
+
+#### 부가 개선
+
+- **편집_세션 즉시 cleanup + ttl 단축** — 한쪽 환경 닫아도 5분간 row 잔재로 상대편에서 "편집 중" 표시 잔류 문제 발견. `delete_편집_세션()` 함수 추가 + ttl_min 5→1 단축 + "← 목록으로"/`_cancel`에서 자기 row 즉시 삭제. ([supabase_read.py:545](pipeline/supabase_read.py:545))
+- **저장 버튼 floating(sticky/fixed)** — 사용자 요청. CSS 두 차례 시도 모두 적용 안 됨 (selector가 Streamlit 1.44 DOM과 매치 안 한 것으로 추정). 보류 결정 → [docs/BACKLOG.md](docs/BACKLOG.md) 에 시도 내역·다음 시도 방향 기록. 코드의 CSS/마커/spacer 잔재 모두 제거.
+
 ### 다음 우선순위
 
-1. **운영 검증** (push 전 권장):
-   - 로컬 `run.bat` 재시작 → 제품 수정 페이지 진입 → 다른 브라우저 시크릿 창에서 같은 페이지 진입 → 다른 사용자 편집 알림 배지 표시 확인
-   - 두 창에서 동시에 저장 → 후행 저장이 `"⚠️ 다른 사용자가 먼저 저장…"` 메시지로 차단되는지 확인
-   - Drive 대시보드 진입 → quota progress · 파일수 · OAuth 재인증 가이드 표시 확인
-2. **GitHub push** — 검증 만족 시 → Streamlit Cloud 자동 재배포 → 동료 운영 즉시 반영
-3. **2026-05-05 이월** — D(참고 필드 컨트롤), C(갤러리 강화) — 계속 보류
+1. **GitHub push** — 후속 fix 검증 완료. 동료 운영 시작 시점에 맞춰 push 결정 (현재 동료 작업 전, 시급성 없음).
+2. **2026-05-05 이월** — D(참고 필드 컨트롤), C(갤러리 강화) — 계속 보류
 
 ### Backlog (이번 세션에서 추가됨 — 결정 로그 §4 참조)
 
-- OAuth callback 통합 (대시보드 안 동료 직접 재인증)
+- **OAuth callback 통합 — 동료 측**: Drive 대시보드 안 "🔄 재인증" 버튼 클릭 → Streamlit Cloud에서 Google OAuth flow → `drive_auth` DB 자동 업데이트. 동료가 자기 손으로 자기 계정 토큰 갱신.
+- **OAuth callback 통합 — owner 측**: 같은 페이지에 "🔄 내 계정 재인증" 버튼 → 로컬 브라우저로 OAuth flow → DB 갱신. 현재 `scripts/refresh_oauth_token.py` 단독 실행 방식을 페이지 버튼 클릭으로 대체.
 - Drive 토큰 만료 임박 표시 (drive_auth.updated_at 기준)
-- 편집_세션 만료 row 정리 (cron 또는 진입 시 청소)
+- 편집_세션 만료 row 정리 (cron 또는 진입 시 청소) — 명시적 종료 시 즉시 삭제 + ttl 1분 단축까지는 처리됨. 사이드바 이탈/브라우저 강제 종료 케이스는 ttl로만 정리되므로 보조 cleanup 여전히 필요.
+- **스펙 탭 저장 버튼 floating** — [docs/BACKLOG.md](docs/BACKLOG.md) 참조. CSS 시도 2회 실패, 다음 라운드에서 DOM 검증부터 재시작.
 
 ### 자동 로드되는 컨텍스트
 - 글로벌 CLAUDE.md (사용자 철칙)
