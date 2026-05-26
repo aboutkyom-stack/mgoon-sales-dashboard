@@ -168,91 +168,44 @@ CREATE INDEX idx_편집세션_상품 ON 편집_세션(상품_id);
 - [x] 앱 정상 동작 확인 (DB·이미지·파이프라인)
 - [x] 동료 접속 확인 (sign in 후 접근 가능)
 
-### Phase 1 — DB 스키마 & 백엔드 (작은 단위)
+### Phase 1 — DB 스키마 & 백엔드 ✅ 완료 (2026-05-26, commit `30655bc`)
 
-- [ ] **1-1. Supabase 마이그레이션 — `편집_세션` 테이블**
-  - `db/add_편집_세션.sql` + `db/run_add_편집_세션.py` 신규
-  - 멱등 (IF NOT EXISTS)
+- [x] **1-1. `편집_세션` 테이블** — `db/add_편집_세션.sql` + `db/run_add_편집_세션.py` (멱등 IF NOT EXISTS)
+- [x] **1-2. `drive_auth` 테이블** — **옵션 b 채택** (우리 DB에 `drive_accounts` 없음). `db/add_drive_auth.sql` + 실행기
+- [x] **1-3. Drive 토큰 함수** — `get_drive_token`, `upsert_drive_token` 추가
+- [x] **1-4. 편집 세션 함수** — `upsert_편집_세션`, `get_active_편집_세션(ttl_min=5)` 추가
+- [x] **1-5. 낙관적 락 지원** — `update_상품(original_수정일=None)` 시그니처 확장, 충돌 시 `False` 반환
+- [x] **(부록) `상품_수정일_갱신` 트리거 추가** — §2-6 A의 "추가 마이그레이션 불필요" 가정이 실제와 달랐음 (수정일은 DEFAULT NOW만 있고 UPDATE 트리거 부재). BEFORE UPDATE 트리거로 보강 → 낙관적 락 동작 보장. `db/add_상품_수정일_트리거.sql` + 실행기
 
-- [ ] **1-2. Supabase 마이그레이션 — `drive_auth` 컬럼/테이블**
-  - 옵션 a: 기존 `drive_accounts` 테이블에 `refresh_token`, `client_id`, `client_secret`, `token_uri`, `scopes` 컬럼 추가
-  - 옵션 b: 신규 `drive_auth` 테이블 별도 생성
-  - **결정 필요**: 새 채팅방에서 기존 `drive_accounts` 스키마 확인 후 결정
+### Phase 2 — 코드 분기 로직 ✅ 완료 (2026-05-26, commit `6a3c693`)
 
-- [ ] **1-3. `pipeline/supabase_read.py` — Drive 토큰 함수 추가**
-  - `get_drive_token(name) → dict`
-  - `upsert_drive_token(name, token_data)`
+- [x] **2-1. `drive_client.py` DB fallback** — pickle 우선 + `drive_auth` DB fallback. refresh 시 양쪽 동기화. 환경 감지는 `pipeline.runtime.is_streamlit_cloud`.
+- [x] **2-2. `refresh_oauth_token.py` DB 자동 update** — 발급 후 `upsert_drive_token` 자동 호출
+- [x] **2-3. `pages/2_product_edit.py` 동시편집 통합** — 진입 시 편집 세션 upsert(30초 debounce, 임시 레코드 제외) + 다른 사용자 편집 알림 배지 + `_save` / `_auto_apply_after_vision` / 충돌 해소 통합 저장에 낙관적 락 적용
 
-- [ ] **1-4. `pipeline/supabase_read.py` — 편집 세션 함수 추가**
-  - `upsert_편집_세션(상품_id, 사용자명)`
-  - `get_active_편집_세션(상품_id, exclude_사용자명, ttl_min=5) → list`
+### Phase 3 — Drive 계정 대시보드 ✅ 완료 (2026-05-27, commit `ea64391`)
 
-- [ ] **1-5. `pipeline/supabase_read.py` — 낙관적 락 지원**
-  - `update_상품()` 함수 시그니처 확장: `original_수정일` optional 인자 추가
-  - 매칭 실패 시 None 반환 (또는 별도 sentinel)
+- [x] **3-1. `get_account_quota(name)`** — `about(storageQuota,user)` 기반 정확 quota·email
+- [x] **3-2. `pages/5_drive_dashboard.py` 신규** — 카드(역할·이메일·상태·잔여용량 progress·파일수·토큰동기화시각) + 추천 다음 업로드 계정 헤더 + `@st.cache_data(ttl=60)`
+- [x] **3-3. 계정 역할 라벨 — 코드 단일 소스 채택** — `drive_client.ACCOUNTS` 항목에 `"역할"` 필드 추가 (voyager=메인 운영, donnamoo=보조 운영)
+- [x] **(신규) OAuth 재인증 1차 — 가이드 expander** — 각 카드에 로컬 `refresh_oauth_token.py` 실행 절차 안내. 대시보드 내 진짜 OAuth callback 통합은 Backlog (redirect URI 추가 등록 필요)
 
-### Phase 2 — 코드 분기 로직
+### Phase 4 — 배포 준비 ✅ 완료 (2026-05-27, commit `ea64391`)
 
-- [ ] **2-1. `pipeline/drive_client.py` — DB fallback 추가**
-  - 환경 감지 (`_running_on_streamlit_cloud()` 헬퍼)
-  - 로컬 owner: pickle 우선
-  - Cloud 또는 pickle 없을 때: DB에서 토큰 read → `Credentials` 객체 빌드
+- [x] **4-1. 환경 감지 헬퍼** — `pipeline/runtime.py:is_streamlit_cloud()` (HOSTNAME / STREAMLIT_SHARING_MODE / STREAMLIT_RUNTIME)
+- [x] **4-2. `secrets.toml` 템플릿** — `.streamlit/secrets.toml.example` 신규
+- [x] **4-3. `os.getenv` 호출 통일 점검** — 모든 키 top-level (APP_ROLE / ANTHROPIC_API_KEY / GEMINI_API_KEY / MY_SUPABASE_* / 모델 override). Streamlit secrets.toml top-level 자동 환경변수 매핑과 호환 → **코드 변경 불필요**
 
-- [ ] **2-2. `scripts/refresh_oauth_token.py` — DB 자동 update 추가**
-  - 발급 후 pickle 저장 + DB upsert 자동 실행
-  - 본인 계정 신규 발급 흐름 가이드 (OAUTH_SETUP.md 갱신)
+### Phase 5 — GitHub & Streamlit Cloud 셋업 ✅ 완료/취소 (Phase 0에서 처리)
 
-- [ ] **2-3. `pages/2_product_edit.py` — 동시편집 통합**
-  - 진입 시 `upsert_편집_세션()` 호출
-  - 상단 배지: 다른 사용자 편집 중 알림
-  - 저장 시 낙관적 락 (`update_상품(... , original_수정일)`) → 충돌 시 토스트
-
-### Phase 3 — Drive 계정 대시보드 (사용자 요청)
-
-- [ ] **3-1. `pipeline/drive_client.py` — quota 조회 함수**
-  - `get_account_quota(name) → dict(total, used, free, percent)`
-  - Drive API `about().get(fields="storageQuota,user")` 사용
-  - 본인 OAuth 계정에서 정확한 값 조회 가능 (서비스 계정과 달리)
-
-- [ ] **3-2. `pages/?_drive_dashboard.py` 신규 페이지**
-  - 모든 연동 계정 카드 표시:
-    - 계정명(label) + 이메일 + 역할 라벨 (예: "메인 운영", "백업", "테스트")
-    - 총 용량 / 사용량 / 잔여 (progress bar)
-    - DB의 `상품_파일` 행 수 (이 계정에 업로드된 파일 개수)
-    - 마지막 사용 시각
-    - 상태 (✅ 정상 / ⚠️ 토큰 만료 임박 / ❌ 토큰 무효)
-  - 헤더에 "추천 다음 업로드 계정: {잔여 가장 많은 계정}"
-  - 사이드바 메뉴에 등록 ("☁️ Drive 계정")
-
-- [ ] **3-3. 계정 역할 라벨 DB 컬럼**
-  - `drive_accounts.역할 TEXT` 같은 컬럼 추가 (옵션)
-  - 또는 `drive_client.ACCOUNTS` 리스트에 역할 필드 추가
-  - **결정 필요**: 새 채팅방에서 정함
-
-### Phase 4 — 배포 준비 (코드 측면)
-
-- [ ] **4-1. Streamlit Cloud 환경 감지 헬퍼**
-  - `pipeline/runtime.py` 신규 또는 `role.py` 확장
-  - `is_streamlit_cloud() → bool` (`os.getenv("HOSTNAME")` 또는 `st.runtime` 활용)
-
-- [ ] **4-2. `secrets.toml` 템플릿**
-  - `.streamlit/secrets.toml.example` 신규 (실제 secrets.toml은 .gitignore 그대로)
-  - Streamlit Cloud secrets 등록 UI에 그대로 붙여넣을 수 있는 형식
-
-- [ ] **4-3. `os.getenv` 호출 통일**
-  - 코드 전반에서 `os.getenv` 사용 중 — Streamlit Cloud는 secrets를 자동으로 환경변수에 매핑하므로 그대로 동작
-  - 단 secrets.toml에 [section]을 쓰면 `os.getenv("section_KEY")` 형식이라 통일 확인 필요
-
-### Phase 5 — GitHub & Streamlit Cloud 셋업 (사용자 직접 + Claude 보조)
-
-- [ ] **5-1. GitHub Public repo 생성** (`gh repo create` 가능)
-- [ ] **5-2. 첫 push 인증 (Personal Access Token 등록)**
-- [ ] **5-3. 본인 OAuth client 발급 (Google Cloud Console — 사용자 직접)**
-- [ ] **5-4. 본인 Drive 계정 ACCOUNTS 리스트에 추가 + pickle 발급 + DB upsert**
-- [ ] **5-5. share.streamlit.io 가입 + 앱 생성 (사용자 직접)**
-- [ ] **5-6. Streamlit Cloud secrets 등록 (사용자 직접, Claude가 toml 내용 안내)**
-- [ ] **5-7. Restricted access 설정 + 동료 이메일 추가 (사용자 직접)**
-- [ ] **5-8. 동료 첫 접속 테스트**
+- [x] **5-1. GitHub Public repo 생성** — Phase 0에서 완료 (`aboutkyom-stack/auto-sales`)
+- [x] **5-2. 첫 push 인증** — Phase 0에서 완료
+- ~~5-3. 본인 OAuth client 발급~~ — **취소** (§2-4 결정 변경: 동료 credentials 그대로 인수)
+- ~~5-4. 본인 Drive 계정 ACCOUNTS 추가~~ — **취소** (§2-4 결정 변경: 동료 계정 그대로 사용)
+- [x] **5-5. share.streamlit.io 가입 + 앱 생성** — Phase 0에서 완료
+- [x] **5-6. Streamlit Cloud secrets 등록** — Phase 0에서 완료
+- [x] **5-7. Restricted access 설정** — Phase 0에서 완료
+- [x] **5-8. 동료 첫 접속 테스트** — Phase 0에서 완료
 
 ---
 
@@ -270,6 +223,9 @@ CREATE INDEX idx_편집세션_상품 ON 편집_세션(상품_id);
 - **OAuth 갱신 방식 A (Streamlit Cloud 내장 OAuth 갱신 페이지)** — 방식 B(로컬 스크립트)가 너무 불편할 때
 - **다인 운영 대비 사용자명 식별자 강화** (현재 owner/partner 2값)
 - **Drive 자동 분배 로직** — 잔여 용량 가장 많은 계정 자동 선택 (PROJECT_STATUS.md 기존 backlog와 동일)
+- **(2026-05-27 추가) Drive 대시보드 안 OAuth callback 통합** — 동료가 대시보드에서 직접 재인증 가능하게. Streamlit Cloud redirect URI 등록 + `flow.fetch_token` 통합 필요. 현재 1차는 가이드 expander만.
+- **(2026-05-27 추가) Drive 토큰 만료 임박 표시** — `drive_auth.updated_at` 기준 N일 경과 시 ⚠️ 배지. OAuth 7일 만료 가정 + 활성 사용 시 연장 케이스 처리.
+- **(2026-05-27 추가) 편집_세션 만료 row 정리** — 현재 ttl 5분 필터로 무시만 함, row 누적. 페이지 진입 시 또는 cron으로 정기 청소.
 
 ---
 
