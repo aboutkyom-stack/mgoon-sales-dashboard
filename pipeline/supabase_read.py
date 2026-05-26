@@ -439,6 +439,23 @@ def list_계정_values() -> list[str]:
         return []
 
 
+def count_파일_by_계정() -> dict[str, int]:
+    """상품_파일 테이블의 계정별 파일 수 dict. {계정: count}.
+
+    Drive 대시보드 카드의 "이 계정에 업로드된 파일 수" 표시용.
+    """
+    try:
+        res = _client().table("상품_파일").select("계정").execute()
+        counts: dict[str, int] = {}
+        for row in res.data or []:
+            v = row.get("계정")
+            if v:
+                counts[v] = counts.get(v, 0) + 1
+        return counts
+    except Exception:
+        return {}
+
+
 def delete_파일(파일_id: int) -> None:
     """상품_파일 레코드 삭제."""
     _client().table("상품_파일").delete().eq("id", 파일_id).execute()

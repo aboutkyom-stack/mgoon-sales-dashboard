@@ -34,9 +34,10 @@ _EXT_TO_MIME: dict[str, str] = {
 ASSUMED_LIMIT_BYTES: int = 15 * 1024 ** 3
 
 # 계정 목록. 추가 시 여기에만 넣으면 됨.
+# 역할: 대시보드에서 카드 라벨로 노출. 자유 텍스트 (예: "메인 운영", "보조", "백업", "테스트")
 ACCOUNTS: list[dict] = [
-    {"label": "account1_voyager",  "n": "1", "name": "voyager"},
-    {"label": "account2_donnamoo", "n": "2", "name": "donnamoo"},
+    {"label": "account1_voyager",  "n": "1", "name": "voyager",  "역할": "메인 운영"},
+    {"label": "account2_donnamoo", "n": "2", "name": "donnamoo", "역할": "보조 운영"},
 ]
 
 # MIME 타입 → 파일_유형 매핑
@@ -357,6 +358,56 @@ def get_usage_bytes(service) -> int:
         if not page_token:
             break
     return total
+
+
+def get_account_quota(account_name: str) -> dict:
+    """OAuth 계정의 Drive 사용량 + 사용자 정보 조회.
+
+    `about().get(fields="storageQuota,user")` 기반 — 개인 OAuth 계정에서 정확한 값 반환.
+    서비스 계정은 storageQuota 미지원이므로 사용 불가.
+
+    Returns:
+        {
+            "label": str, "name": str, "역할": str,
+            "email": str | None,
+            "used": int, "total": int, "free": int, "pct": float (0~1),
+            "error": str | None,
+        }
+        실패 시 error에 메시지, 나머지 수치는 0.
+    """
+    acc = next((a for a in ACCOUNTS if a["name"] == account_name), None)
+    if acc is None:
+        return {
+            "label": "", "name": account_name, "역할": "",
+            "email": None, "used": 0, "total": 0, "free": 0, "pct": 0.0,
+            "error": f"unknown account: {account_name}",
+        }
+    entry: dict = {
+        "label": acc["label"],
+        "name":  acc["name"],
+        "역할":  acc.get("역할", ""),
+        "email": None,
+        "used":  0,
+        "total": 0,
+        "free":  0,
+        "pct":   0.0,
+        "error": None,
+    }
+    try:
+        svc = build_service(acc["label"])
+        about = svc.about().get(fields="storageQuota,user").execute()
+        sq   = about.get("storageQuota", {}) or {}
+        user = about.get("user", {}) or {}
+        used  = int(sq.get("usage", 0) or 0)
+        total = int(sq.get("limit", 0) or 0)
+        entry["used"]  = used
+        entry["total"] = total
+        entry["free"]  = max(total - used, 0)
+        entry["pct"]   = (used / total) if total > 0 else 0.0
+        entry["email"] = user.get("emailAddress")
+    except Exception as e:
+        entry["error"] = str(e)
+    return entry
 
 
 def get_all_quota_info() -> list[dict]:
