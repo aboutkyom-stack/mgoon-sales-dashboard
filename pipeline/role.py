@@ -12,3 +12,12 @@ import os
 def is_owner() -> bool:
     """APP_ROLE이 'owner'이거나 미설정이면 True."""
     return os.getenv("APP_ROLE", "owner").strip().lower() != "partner"
+
+
+def current_username() -> str:
+    """편집 세션 식별자.
+
+    동시편집 보호(편집_세션 테이블)에서 row를 구분하는 사용자명.
+    APP_ROLE에 따라 'owner(나)' 또는 'partner(동료)'.
+    """
+    return "owner(나)" if is_owner() else "partner(동료)"

@@ -104,6 +104,21 @@ def main() -> int:
 
     print()
     print(f"✅ 발급 완료: {token_pickle}")
+
+    # DB 동기화 — Streamlit Cloud(partner)에서도 같은 토큰 사용 가능하게
+    try:
+        from pipeline.supabase_read import upsert_drive_token
+        upsert_drive_token(args.name, {
+            "refresh_token": creds.refresh_token,
+            "client_id": creds.client_id,
+            "client_secret": creds.client_secret,
+            "token_uri": creds.token_uri,
+            "scopes": list(creds.scopes) if creds.scopes else SCOPES,
+        })
+        print(f"✅ DB drive_auth 동기화 완료: {args.name}")
+    except Exception as e:
+        print(f"⚠ DB 동기화 실패 (pickle은 정상 저장됨, Cloud에서는 미반영): {e}")
+
     print()
     print("   이제 자동화형 Streamlit을 재시작하면 VP 정상 작동합니다.")
     return 0

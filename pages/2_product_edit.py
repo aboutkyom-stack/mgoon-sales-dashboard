@@ -33,6 +33,7 @@ from pipeline.supabase_read import (
     delete_비전패스_이력,
     delete_파일,
     delete_상품,
+    get_active_편집_세션,
     get_files,
     get_product,
     get_product_spec,
@@ -45,9 +46,10 @@ from pipeline.supabase_read import (
     set_엠군작업대상,
     update_상품,
     update_시각설명,
+    upsert_편집_세션,
     upsert_파일,
 )
-from pipeline.role import is_owner
+from pipeline.role import current_username, is_owner
 from pipeline.models_config import (
     ALL_VP_MODELS,
     CLAUDE_VP_MODELS,
@@ -96,6 +98,33 @@ if _is_temp:
 else:
     st.title(f"✏️ 제품 수정 — #{product_id}")
     st.caption("🗄️ DB — 상품 테이블")
+
+# ── 동시편집 보호 (사회적 조정 + 낙관적 락은 _save 등에서) ──
+# 임시 레코드는 한 사용자만 다루므로 편집 세션 등록 skip
+_current_username = current_username()
+if not _is_temp:
+    import time as _time
+    _last_upsert = st.session_state.get("_edit_session_last_upsert", 0)
+    if _time.time() - _last_upsert > 30:
+        try:
+            upsert_편집_세션(product_id, _current_username)
+            st.session_state["_edit_session_last_upsert"] = _time.time()
+        except Exception:
+            pass
+
+    try:
+        _others = get_active_편집_세션(product_id, exclude_사용자명=_current_username, ttl_min=5)
+    except Exception:
+        _others = []
+    if _others:
+        _ot = _others[0]
+        _ot_name = _ot.get("사용자명", "타사용자")
+        _ot_at_raw = _ot.get("마지막_활동시각", "") or ""
+        try:
+            _ot_at = datetime.fromisoformat(_ot_at_raw.replace("Z", "+00:00")).strftime("%m-%d %H:%M")
+        except Exception:
+            _ot_at = _ot_at_raw[:16] if _ot_at_raw else "?"
+        st.warning(f"⚠️ 지금 **{_ot_name}** 이(가) 편집 중입니다 · 최근 활동 {_ot_at}")
 
 _btn_col1, _btn_col2 = st.columns([1, 4])
 with _btn_col1:
@@ -177,12 +206,20 @@ def _fmt_dt(ts: str | None) -> str:
 
 # ── 공통 저장/취소 유틸 ──────────────────────────────────
 def _save(payload: dict) -> None:
-    """스펙·판매자정보 payload를 DB에 저장."""
+    """스펙·판매자정보 payload를 DB에 저장. 낙관적 락(임시 레코드 제외)."""
     if not payload.get("제품명", "").strip():
         st.error("제품명은 필수입니다.")
         return
+    # 임시 레코드는 한 사용자만 다루므로 락 생략
+    _orig_ts = None if _is_temp else row.get("수정일")
     try:
-        update_상품(product_id, payload)
+        ok = update_상품(product_id, payload, original_수정일=_orig_ts)
+        if not ok:
+            st.warning(
+                "⚠️ 다른 사용자가 먼저 저장했습니다. "
+                "새로고침 후 입력 내용을 다시 옮겨 시도하세요."
+            )
+            return
         if not payload["제품명"].startswith("임시_"):
             st.session_state.pop("_temp_product_id", None)
         st.session_state.pop("_spec_override", None)
@@ -256,7 +293,10 @@ def _auto_apply_after_vision(pid: int, 시각설명_text: str) -> tuple[int, int
 
     if payload:
         try:
-            update_상품(pid, payload)
+            # 백그라운드 자동 반영 — 다른 사용자가 먼저 저장했으면 silent skip
+            ok = update_상품(pid, payload, original_수정일=cur.get("수정일"))
+            if not ok:
+                return (0, 0)
         except Exception as _ue:
             st.warning(f"자동 반영 DB 저장 실패: {type(_ue).__name__}: {_ue}")
             return (0, 0)
@@ -1405,17 +1445,29 @@ with tab_이미지:
                                         if _new_bullets_only:
                                             _payload["제품특징_bullet"] = list(_cur_bullets_raw) + _new_bullets_only
                                             _bul_added_n = len(_new_bullets_only)
+                                        _lock_ok = True
                                         if _payload:
-                                            update_상품(product_id, _payload)
-                                        st.success(
-                                            f"저장 완료! 시각설명 덮어씀 · "
-                                            f"필드 변경 {len(_payload) - (1 if _bul_added_n else 0)}개 · "
-                                            f"신규 bullet {_bul_added_n}개"
-                                        )
-                                        st.session_state.pop("vp_pending", None)
-                                        st.session_state.pop("_spec_extracted_bulk", None)
-                                        st.session_state.pop("vp_results", None)
-                                        st.rerun()
+                                            _lock_ok = update_상품(
+                                                product_id,
+                                                _payload,
+                                                original_수정일=row.get("수정일"),
+                                            )
+                                        if not _lock_ok:
+                                            st.warning(
+                                                "⚠️ 다른 사용자가 먼저 저장했습니다. "
+                                                "시각설명은 저장되었지만 스펙 필드 반영은 취소되었습니다. "
+                                                "새로고침 후 재시도하세요."
+                                            )
+                                        else:
+                                            st.success(
+                                                f"저장 완료! 시각설명 덮어씀 · "
+                                                f"필드 변경 {len(_payload) - (1 if _bul_added_n else 0)}개 · "
+                                                f"신규 bullet {_bul_added_n}개"
+                                            )
+                                            st.session_state.pop("vp_pending", None)
+                                            st.session_state.pop("_spec_extracted_bulk", None)
+                                            st.session_state.pop("vp_results", None)
+                                            st.rerun()
                                     except Exception as _e:
                                         st.error(f"저장 실패: {_e}")
                             with _bc2:

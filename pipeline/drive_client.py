@@ -53,7 +53,20 @@ _MIME_TO_TYPE: dict[str, str] = {
 
 
 def _get_credentials(label: str):
-    """OAuth2 pickle 토큰으로 Credentials 반환. 만료 시 자동 갱신."""
+    """OAuth2 Credentials 반환.
+
+    토큰 소스 우선순위:
+        1) 로컬: credentials/token{n}_{name}.pickle 우선
+        2) Streamlit Cloud 또는 pickle 없음: Supabase `drive_auth` 테이블 fallback
+
+    만료 시 자동 refresh + 사본 동기화:
+        - 로컬 + pickle 사용 중: pickle 갱신 + DB upsert (refresh_token 회전 대비)
+        - Cloud 또는 DB만 사용 중: DB upsert만
+
+    실패 케이스:
+        - pickle 없음 + drive_auth에도 미등록 → FileNotFoundError
+        - refresh_token 없는 만료 토큰 → RuntimeError
+    """
     import pickle
     try:
         from google.auth.transport.requests import Request
@@ -64,29 +77,66 @@ def _get_credentials(label: str):
             "pip install google-auth google-api-python-client"
         )
 
+    from .runtime import is_streamlit_cloud
+
     acc = next((a for a in ACCOUNTS if a["label"] == label), None)
     if acc is None:
         raise ValueError(f"알 수 없는 계정: {label}")
 
     token_path = CREDENTIALS_DIR / f"token{acc['n']}_{acc['name']}.pickle"
-    if not token_path.exists():
-        raise FileNotFoundError(
-            f"OAuth 토큰 파일 없음: {token_path}\n"
-            "동료에게 token pickle 파일을 받아 credentials/ 폴더에 넣으세요."
+    creds: Credentials | None = None
+    token_source: str = ""  # "pickle" | "db"
+
+    # 1. 로컬에서 pickle 우선
+    if not is_streamlit_cloud() and token_path.exists():
+        with open(token_path, "rb") as f:
+            creds = pickle.load(f)
+        token_source = "pickle"
+
+    # 2. fallback — DB drive_auth (Cloud이거나 로컬에서 pickle 부재)
+    if creds is None:
+        from .supabase_read import get_drive_token
+        db_token = get_drive_token(acc["name"])
+        if db_token is None:
+            raise FileNotFoundError(
+                f"OAuth 토큰을 찾을 수 없음 (pickle 부재 + drive_auth 미등록): {acc['name']}\n"
+                "로컬에서 'python scripts/refresh_oauth_token.py {name}' 실행해 재발급 + DB 동기화 필요."
+            )
+        creds = Credentials(
+            token=None,
+            refresh_token=db_token.get("refresh_token"),
+            client_id=db_token.get("client_id"),
+            client_secret=db_token.get("client_secret"),
+            token_uri=db_token.get("token_uri") or "https://oauth2.googleapis.com/token",
+            scopes=db_token.get("scopes") or SCOPES,
         )
+        token_source = "db"
 
-    with open(token_path, "rb") as f:
-        creds: Credentials = pickle.load(f)
-
+    # 3. 만료 처리 + 양쪽 동기화
     if not creds.valid:
         if creds.expired and creds.refresh_token:
             creds.refresh(Request())
-            with open(token_path, "wb") as f:
-                pickle.dump(creds, f)
+            # pickle 갱신 (로컬에서 pickle 쓰던 경우만)
+            if token_source == "pickle":
+                with open(token_path, "wb") as f:
+                    pickle.dump(creds, f)
+            # DB 갱신 (refresh_token이 회전될 수 있음 + Cloud 사용 케이스 보강)
+            try:
+                from .supabase_read import upsert_drive_token
+                upsert_drive_token(acc["name"], {
+                    "refresh_token": creds.refresh_token,
+                    "client_id": creds.client_id,
+                    "client_secret": creds.client_secret,
+                    "token_uri": creds.token_uri,
+                    "scopes": list(creds.scopes) if creds.scopes else SCOPES,
+                })
+            except Exception:
+                # DB upsert 실패는 치명적이지 않음 (메모리상 토큰은 이미 유효)
+                pass
         else:
             raise RuntimeError(
-                f"토큰 만료 — refresh_token 없음: {token_path}\n"
-                "동료에게 새 token pickle 파일을 받으세요."
+                f"토큰 갱신 불가 — refresh_token 없음: {acc['name']}\n"
+                "scripts/refresh_oauth_token.py로 재발급 필요."
             )
 
     return creds
