@@ -7,7 +7,7 @@
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 import streamlit as st
 
@@ -48,6 +48,49 @@ def _fmt_dt(s: str | None) -> str:
         return datetime.fromisoformat(s.replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M")
     except Exception:
         return s[:16]
+
+
+# Google OAuth refresh_token 만료 정책 (production 외부 사용자): 180일 미사용 시 만료.
+# 마지막 갱신(`drive_auth.updated_at`) 기준 예상 만료까지 일수로 임계값 분기.
+_TOKEN_EXPIRY_DAYS = 180
+_TOKEN_WARN_DAYS_LEFT = 90   # 만료까지 90일 미만 → 노랑
+_TOKEN_DANGER_DAYS_LEFT = 30  # 만료까지 30일 미만 → 빨강
+
+
+def _token_freshness(s: str | None) -> dict:
+    """drive_auth.updated_at 기반 토큰 만료 임박 평가.
+
+    Returns:
+        {
+            "level": "unknown" | "ok" | "warn" | "danger",
+            "dt": str,                    # "YYYY-MM-DD HH:MM" 또는 "—"
+            "ago_days": int,              # 마지막 갱신 후 경과 일수 (모르면 -1)
+            "until_expire_days": int,     # 예상 만료까지 남은 일수 (모르면 -1)
+        }
+    """
+    if not s:
+        return {"level": "unknown", "dt": "—", "ago_days": -1, "until_expire_days": -1}
+    try:
+        ts = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        ago = max((now - ts).days, 0)
+        until = _TOKEN_EXPIRY_DAYS - ago
+        if until < _TOKEN_DANGER_DAYS_LEFT:
+            level = "danger"
+        elif until < _TOKEN_WARN_DAYS_LEFT:
+            level = "warn"
+        else:
+            level = "ok"
+        return {
+            "level": level,
+            "dt": ts.astimezone().strftime("%Y-%m-%d %H:%M"),
+            "ago_days": ago,
+            "until_expire_days": until,
+        }
+    except Exception:
+        return {"level": "unknown", "dt": s[:16], "ago_days": -1, "until_expire_days": -1}
 
 
 with st.spinner("계정 정보 조회 중…"):
@@ -106,23 +149,43 @@ for r in rows:
         with meta_c1:
             st.caption(f"📁 업로드 파일 **{r.get('파일수', 0):,}건**")
         with meta_c2:
-            st.caption(f"🔑 토큰 동기화 **{_fmt_dt(r.get('token_synced_at'))}**")
+            fr = _token_freshness(r.get("token_synced_at"))
+            if fr["level"] == "danger":
+                st.caption(
+                    f"🔑 토큰 동기화 **{fr['dt']}**  "
+                    f":red[🔴 예상 만료까지 약 **{fr['until_expire_days']}일** — 재인증 권장]"
+                )
+            elif fr["level"] == "warn":
+                st.caption(
+                    f"🔑 토큰 동기화 **{fr['dt']}**  "
+                    f":orange[⚠️ 예상 만료까지 약 **{fr['until_expire_days']}일**]"
+                )
+            elif fr["level"] == "ok":
+                st.caption(
+                    f"🔑 토큰 동기화 **{fr['dt']}** ({fr['ago_days']}일 전)"
+                )
+            else:
+                st.caption(f"🔑 토큰 동기화 **{fr['dt']}**")
         with meta_c3:
             st.caption(f"🏷️ label **{r.get('label', '—')}**")
 
-        # OAuth 재인증 가이드 (1차 구현 — Cloud 내장 callback은 Backlog)
+        # 토큰 만료 시 수동 발급 절차 — 자동 재인증 UI는 [docs/BACKLOG.md] 참조
         acc_def = next((a for a in ACCOUNTS if a["name"] == r["name"]), None)
         n = acc_def["n"] if acc_def else "?"
-        with st.expander("🔁 OAuth 재인증 가이드"):
+        with st.expander("🔁 토큰 만료 시 수동 발급 절차"):
             st.markdown(
-                "**토큰 만료(`invalid_grant`) 또는 새 권한 필요 시 절차:**\n\n"
-                f"1. **로컬 PC**에서 자동화형 폴더 진입\n"
-                f"2. `python scripts/refresh_oauth_token.py {r['name']}` 실행\n"
-                f"3. 브라우저가 열림 → Google 로그인 → 권한 동의\n"
-                f"4. 완료 시 `credentials/token{n}_{r['name']}.pickle` 갱신 + DB `drive_auth` 자동 동기화\n"
-                f"5. (Streamlit Cloud 운영 중이면 추가 push 불필요 — Cloud는 DB에서 직접 토큰 read)\n"
+                "**⚠️ 사전 준비 (만료 첫 직면 시 1회):**  \n"
+                f"`credentials/account{n}_{r['name']}.json` 이 **Desktop OAuth client JSON** 이어야 합니다. "
+                "현재 파일이 `service_account` 키이면 `InstalledAppFlow`가 거부합니다.  \n"
+                "→ Google Cloud Console에서 OAuth Desktop client 발급 후 같은 경로에 덮어쓰기. "
+                "절차: [OAUTH_SETUP.md](OAUTH_SETUP.md) §1-4"
             )
-            st.info(
-                "⚙️ 향후: 대시보드 안에서 동료가 직접 재인증할 수 있게 OAuth callback 통합 예정 "
-                "(redirect URI 추가 등록 필요 — Backlog)."
+            st.divider()
+            st.markdown(
+                "**토큰 발급/갱신 (로컬 owner 실행):**  \n"
+                f"1. 로컬 PC에서 자동화형 폴더 진입  \n"
+                f"2. `python scripts/refresh_oauth_token.py {r['name']}` 실행  \n"
+                f"3. 브라우저 → Google 로그인 → 권한 동의  \n"
+                f"4. 완료 시 `credentials/token{n}_{r['name']}.pickle` + `drive_auth` 자동 동기화  \n"
+                "5. (Streamlit Cloud 운영 중이면 DB에서 즉시 read — push 불필요)"
             )

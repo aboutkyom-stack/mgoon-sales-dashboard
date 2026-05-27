@@ -1,6 +1,6 @@
 """페이지 1 — 상품 조회.
 
-- 완성/진행중/미완성 3개 테이블로 분리 조회.
+- 완성/진행중/일반 3개 테이블로 분리 조회.
 - 각 테이블 검색(이름·id selectbox) + 엠군상태 필터.
 - 세 테이블 공통의 컬럼 표시 설정.
 - 행 선택 → 상세 영역. 다른 테이블에서 선택 시 이전 선택 자동 해제.
@@ -26,7 +26,7 @@ _COL_PREFS_FILE = Path(__file__).parent.parent / "settings_columns.json"
 
 _COMP_DONE = "✅ 완성"
 _COMP_PROG = "🟡 진행중"
-_COMP_TODO = "⬛ 미완성"
+_COMP_TODO = "⬛ 일반"
 
 _HELP_엠군상태 = (
     "**엠군상태** — `상품.엠군상태` 컬럼 값입니다.\n\n"
@@ -40,7 +40,7 @@ _HELP_완성도 = (
     "**완성도 기준** — 이미지·핵심 필드 입력 여부로 자동 판정합니다.\n\n"
     f"- {_COMP_DONE} : 이미지 1장 이상 + 카테고리 + 제품특징_bullet 모두 입력\n"
     f"- {_COMP_PROG} : 이미지는 있으나 카테고리·제품특징_bullet 중 하나 이상 비어 있음\n"
-    f"- {_COMP_TODO} : 이미지 0장"
+    f"- {_COMP_TODO} : 이미지 0장 (아직 작업 시작 전)"
 )
 
 
@@ -195,6 +195,11 @@ if "_prod_selections" not in st.session_state:
 if "_prod_table_keys" not in st.session_state:
     st.session_state._prod_table_keys = {"done": 0, "prog": 0, "todo": 0}
 
+# ─── D안: 일괄 작업대상 토글 — multiselect 카운터 (이 블록 통째로 삭제 가능) ───
+if "_toggle_counter" not in st.session_state:
+    st.session_state._toggle_counter = {"done": 0, "prog": 0, "todo": 0}
+# ─── /D안 끝 ───
+
 
 def _render_table(df_sub: pd.DataFrame, key: str, title: str):
     """1개 완성도 그룹 테이블 렌더. (event, filtered_view) 반환. 빈 결과는 (None, view)."""
@@ -263,6 +268,49 @@ def _render_table(df_sub: pd.DataFrame, key: str, title: str):
             key=df_key,
             height=420,
         )
+
+        # ─── D안: 일괄 작업대상 토글 (이 블록 통째로 삭제 가능) ───
+        if "엠군작업대상" in view.columns:
+            with st.expander("🎯 작업대상 일괄 토글", expanded=(key == "todo")):
+                option_ids = view["id"].tolist()
+                name_local = view.set_index("id")["제품명"].fillna("").to_dict()
+                on_set = set(view[view["엠군작업대상"] == True]["id"].tolist())
+
+                def _fmt_toggle(pid: int) -> str:
+                    mark = "✅" if pid in on_set else "⬛"
+                    return f"{mark} [{pid}] {name_local.get(pid, '')}"
+
+                ms_key = f"toggle_ms_{key}_v{st.session_state._toggle_counter[key]}"
+                selected = st.multiselect(
+                    "토글할 제품 선택 (제품명 일부 입력 가능)",
+                    options=option_ids,
+                    format_func=_fmt_toggle,
+                    key=ms_key,
+                )
+                bc1, bc2, _ = st.columns([1, 1, 4])
+                if bc1.button(
+                    "✅ 일괄 ON",
+                    key=f"toggle_on_{key}",
+                    disabled=not selected,
+                    type="primary",
+                ):
+                    for pid in selected:
+                        set_엠군작업대상(int(pid), True)
+                    st.toast(f"✅ {len(selected)}개 작업대상 ON")
+                    st.session_state._toggle_counter[key] += 1
+                    st.rerun()
+                if bc2.button(
+                    "⬛ 일괄 OFF",
+                    key=f"toggle_off_{key}",
+                    disabled=not selected,
+                ):
+                    for pid in selected:
+                        set_엠군작업대상(int(pid), False)
+                    st.toast(f"⬛ {len(selected)}개 작업대상 OFF")
+                    st.session_state._toggle_counter[key] += 1
+                    st.rerun()
+        # ─── /D안 끝 ───
+
         return event, view
 
 

@@ -343,3 +343,65 @@ def build_user_input_05(product: dict, target: dict, positioning_text: str,
 - 지역 키워드는 검색량과 경쟁 강도를 함께 가늠해서 3~5개 제시하라.
 - 대체재 전략은 적용 가능할 때만 제시하라 (강제 X).
 - qa_checklist.md 규칙을 위반하지 마라."""
+
+
+def load_listing_name_prompt() -> str:
+    """05 채널 페이지의 보조 작업(상품명·브랜드명)용 시스템 프롬프트.
+
+    05 본체(채널 분석)와 다른 별도 호출. agents/05_channel/listing_name_instruction.md.
+    """
+    path = AGENTS_DIR / "05_channel" / "listing_name_instruction.md"
+    return _read(path)
+
+
+def build_user_input_listing_name(
+    product: dict,
+    target: dict,
+    positioning_text: str,
+    product_name: str,
+    channel_text: str,
+    channel_target: str = "전체 추천 채널",
+    want_brand: bool = False,
+    cfg: dict | None = None,
+) -> str:
+    """05 페이지 보조 작업(상품명·브랜드명)용 유저 프롬프트.
+
+    입력:
+    - product: 제품 정보 (05 단계 excluded_fields 적용 후 사용)
+    - target: 01에서 확정된 타겟 dict
+    - positioning_text: 02 포지셔닝 결과 본문
+    - product_name: 03에서 확정된 제품명 (자유 텍스트, 사용자가 골라 입력)
+    - channel_text: 05 채널 결과 본문 (추천 채널 순위·허브 키워드 등)
+    - channel_target: 어느 채널을 대상으로 할지 ("스마트스토어"/"쿠팡"/"전체 추천 채널" 등)
+    - want_brand: 브랜드명도 같이 생성할지
+    """
+    product_block = json.dumps(_filter_product(product, "05", cfg), ensure_ascii=False, indent=2)
+    target_block = json.dumps(target, ensure_ascii=False, indent=2)
+    brand_flag = "true" if want_brand else "false"
+    return f"""아래 입력을 바탕으로 상품명(채널 리스팅 제목){' 및 브랜드명' if want_brand else ''}을 생성하라.
+
+[제품 정보]
+{product_block}
+
+[01에서 확정된 타겟]
+{target_block}
+
+[02 포지셔닝 결과]
+{positioning_text}
+
+[03에서 확정된 제품명]
+{product_name or '(미입력 — 03 단계에서 확정 후 다시 호출 권고)'}
+
+[05 채널 결과]
+{channel_text or '(미입력)'}
+
+[호출 옵션]
+- 대상 채널: {channel_target}
+- 브랜드명_생성: {brand_flag}
+
+[지시]
+- listing_name_instruction.md 형식을 그대로 따르라.
+- 상품명은 대상 채널의 SEO 가이드를 우선 적용하라.
+- 03 제품명을 상품명 안에 자연스럽게 포함시키되, 채널 SEO 규격에 맞게 키워드와 조합하라.
+- 브랜드명_생성=false이면 브랜드명 절은 통째로 생략하라.
+- "홍보합니다"식 광고 문구 금지."""

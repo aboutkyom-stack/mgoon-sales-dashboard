@@ -1449,16 +1449,57 @@ git 커밋: `351a514 feat: partner 모드 + 엠군작업대상 필드 추가`
 - **편집_세션 즉시 cleanup + ttl 단축** — 한쪽 환경 닫아도 5분간 row 잔재로 상대편에서 "편집 중" 표시 잔류 문제 발견. `delete_편집_세션()` 함수 추가 + ttl_min 5→1 단축 + "← 목록으로"/`_cancel`에서 자기 row 즉시 삭제. ([supabase_read.py:545](pipeline/supabase_read.py:545))
 - **저장 버튼 floating(sticky/fixed)** — 사용자 요청. CSS 두 차례 시도 모두 적용 안 됨 (selector가 Streamlit 1.44 DOM과 매치 안 한 것으로 추정). 보류 결정 → [docs/BACKLOG.md](docs/BACKLOG.md) 에 시도 내역·다음 시도 방향 기록. 코드의 CSS/마커/spacer 잔재 모두 제거.
 
+### ✅ 추가 완료 (전 세션 누락 발견 + 후속 세션 진행)
+
+#### A) D — 00~05 단계 참고 필드 컨트롤 (전 세션에서 완료, 문서 갱신만 누락이었음)
+
+- [pages/0_settings.py:124-141](pages/0_settings.py:124) — "🔍 참고 필드 관리" 섹션. 7개 단계(00·01·02·03·04·04_1·05) 각각 멀티셀렉트 + 옵션 17개(`_EXCLUDABLE_FIELDS`).
+- [pipeline/settings.py:36](pipeline/settings.py:36) — `DEFAULT_EXCLUDED_FIELDS = ["재고", "판매자메모", "검수완료", "검수메모", "엠군상태"]` 기본 제외.
+- [pipeline/settings.py:196](pipeline/settings.py:196) — `excluded_fields_for_stage()` 헬퍼. loader/build_user_input_*에서 stage별 필터링 적용됨.
+
+#### B) Drive 토큰 만료 임박 표시 (후속 세션, Backlog 소화)
+
+- [pages/5_drive_dashboard.py:53-93](pages/5_drive_dashboard.py:53) — `_token_freshness()` 헬퍼. Google OAuth refresh_token 180일 미사용 만료 정책 기준 예상 만료까지 일수 계산.
+- 카드 caption 영역 3단계 색상 분기:
+  - **ok** (회색): `🔑 토큰 동기화 YYYY-MM-DD HH:MM (N일 전)`
+  - **warn** (노랑): `:orange[⚠️ 예상 만료까지 약 N일]` — 만료 90일 미만
+  - **danger** (빨강): `:red[🔴 예상 만료까지 약 N일 — 재인증 권장]` — 만료 30일 미만
+- 임계값은 모듈 상수(`_TOKEN_EXPIRY_DAYS=180`, `_TOKEN_WARN_DAYS_LEFT=90`, `_TOKEN_DANGER_DAYS_LEFT=30`)로 노출.
+
+#### C) owner 측 OAuth callback 통합 — ⚠️ 시도 후 회수 (사전 조건 미정비)
+
+**시도한 구현 (코드 자체는 작동)**:
+- `pages/5_drive_dashboard.py`에 `_run_reauth()` subprocess 헬퍼 + 각 카드 "🔁 OAuth 재인증" expander 안 "🔄 지금 재인증" primary 버튼 + spinner + 결과 토스트 + `_gather.clear()`/`st.rerun()` + Cloud/로컬 환경 분기 구현
+- 첫 실행 시 UTF-8 인코딩 에러 발생 → 원인: Windows 자식 Python의 `sys.stdout` 기본 인코딩이 system locale(cp949)로 fallback되어 스크립트의 이모지 print에서 `UnicodeEncodeError` → 해결: subprocess env에 `PYTHONIOENCODING=utf-8` + `PYTHONUTF8=1` 강제로 fix 검증됨
+
+**실전 시도 시 막힘 (해결 안 됨 — 사용자 환경 문제)**:
+- `credentials/account1_voyager.json` + `account2_donnamoo.json` 둘 다 `type: service_account`
+- `InstalledAppFlow.from_client_secrets_file()`이 `ValueError: Client secrets must be for a web or installed app` 발생
+- **사용자 직접 콘솔 검증 (2026-05-27)**: `python scripts/refresh_oauth_token.py voyager` 콘솔에서 직접 실행해도 같은 ValueError 재현 → subprocess 경로/우리 UI 코드와 무관, **순수 환경 문제임이 재확정**
+- 배경: 2026-04-25 service account → OAuth pickle 전환 시점에 **pickle만 새로 받았고 JSON은 service_account 키 그대로 잔존**. 현재 quota·email 조회는 pickle만으로 정상 작동 중이라 운영상 즉시 영향 없음 (만료 시점에만 문제)
+
+**현재 결정 (2026-05-27 회수)**:
+- 자동 재인증 UI(버튼/spinner/결과 분기/`_run_reauth` 헬퍼/subprocess·os·sys import/`is_streamlit_cloud` import) 모두 깨끗이 삭제
+- expander 라벨 "🔁 OAuth 재인증" → "🔁 토큰 만료 시 수동 발급 절차"로 변경
+- 안에 사전 준비(Desktop OAuth client JSON 발급, OAUTH_SETUP.md §1-4 링크) + 수동 발급 5단계만 유지
+- 자동 재인증 UI 재구현은 Backlog로 이관
+
+**다음 시도 시 사전 조건 (체크리스트)**:
+1. Google Cloud Console에서 OAuth 동의 화면 구성 + 테스트 사용자에 본인 이메일 등록
+2. OAuth 2.0 Client (Desktop app) 발급 → JSON 다운로드
+3. `credentials/account{n}_{name}.json` 덮어쓰기 (현재 service_account 키 → Desktop OAuth client)
+4. `python scripts/refresh_oauth_token.py {name}` 콘솔 직접 실행해 1회 검증 (성공 시 pickle 갱신 + DB 동기화 확인)
+5. 그 후에 자동 재인증 UI 재추가 — `_run_reauth` 헬퍼 + 버튼은 회수된 코드 그대로 복원. **UTF-8 fix(PYTHONIOENCODING=utf-8 + PYTHONUTF8=1 env)는 반드시 포함** (검증된 패턴, 재시도 시 잊지 말 것)
+
 ### 다음 우선순위
 
-1. **GitHub push** — 후속 fix 검증 완료. 동료 운영 시작 시점에 맞춰 push 결정 (현재 동료 작업 전, 시급성 없음).
-2. **2026-05-05 이월** — D(참고 필드 컨트롤), C(갤러리 강화) — 계속 보류
+1. **GitHub push** — Drive 토큰 만료 표시까지 검증 완료. 동료 운영 시작 시점에 맞춰 push 결정.
+2. **C(갤러리 강화)** — 2026-05-05 이월 잔여. 계속 보류 (편의성 강화, 운영 차단 없음).
 
-### Backlog (이번 세션에서 추가됨 — 결정 로그 §4 참조)
+### Backlog (잔여)
 
-- **OAuth callback 통합 — 동료 측**: Drive 대시보드 안 "🔄 재인증" 버튼 클릭 → Streamlit Cloud에서 Google OAuth flow → `drive_auth` DB 자동 업데이트. 동료가 자기 손으로 자기 계정 토큰 갱신.
-- **OAuth callback 통합 — owner 측**: 같은 페이지에 "🔄 내 계정 재인증" 버튼 → 로컬 브라우저로 OAuth flow → DB 갱신. 현재 `scripts/refresh_oauth_token.py` 단독 실행 방식을 페이지 버튼 클릭으로 대체.
-- Drive 토큰 만료 임박 표시 (drive_auth.updated_at 기준)
+- **OAuth callback 통합 — owner 측 (자동 재인증 UI 재구현)**: 위 § C의 다음 시도 사전 조건 5단계 완료 후 코드 복원. _run_reauth 헬퍼 + 버튼 + spinner + UTF-8 fix env 패턴은 git 이력(이번 세션 working tree)에서 회수 가능.
+- **OAuth callback 통합 — 동료 측 (Cloud)**: Drive 대시보드 안 "🔄 재인증" 버튼 클릭 → Streamlit Cloud에서 Google OAuth flow → `drive_auth` DB 자동 업데이트. **redirect URI 추가 등록 + state 검증 + secrets.toml client_id/secret** 등 작업 면적 큼 → 별도 세션 권장.
 - 편집_세션 만료 row 정리 (cron 또는 진입 시 청소) — 명시적 종료 시 즉시 삭제 + ttl 1분 단축까지는 처리됨. 사이드바 이탈/브라우저 강제 종료 케이스는 ttl로만 정리되므로 보조 cleanup 여전히 필요.
 - **스펙 탭 저장 버튼 floating** — [docs/BACKLOG.md](docs/BACKLOG.md) 참조. CSS 시도 2회 실패, 다음 라운드에서 DOM 검증부터 재시작.
 

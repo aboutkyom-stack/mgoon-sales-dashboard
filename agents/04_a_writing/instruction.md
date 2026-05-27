@@ -41,7 +41,7 @@
 - `items/item_<id>/00_vision_pass.md` — VP 결과
 - `items/item_<id>/01_deficit_target.md` — 타겟·욕구깡패 3차 + TARGETS_JSON
 - `items/item_<id>/02_positioning.md` — CV·가치더하기·두 개 까고 넣기 + POSITIONING_JSON
-- `items/item_<id>/03_naming.md` — 제품명·브랜드명 (CV 일관성 + 카피에 자연 반영)
+- `items/item_<id>/03_naming.md` — 제품명 (CV 일관성 + 카피에 자연 반영). 상품명·브랜드명은 05 단계 산출물이므로 04에서는 참조 X.
 - 상품 테이블 권위 필드 (가격·인증·스펙·판매자특성 등)
 
 ### 5) ENGINE_PLAN 생성 → 콘티 뱉기

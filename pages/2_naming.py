@@ -69,8 +69,11 @@ def _fmt_dt(s) -> str:
 
 # ──────────────────────── 페이지 시작 ────────────────────────
 
-st.title("🔤 03 네이밍")
-st.caption("🗄️ DB — 엠군_실행/타겟/포지셔닝/상세페이지/채널 (읽기) | 엠군_네이밍 (저장)")
+st.title("🔤 03 제품명 (네이밍)")
+st.caption(
+    "🗄️ DB — 엠군_실행/타겟/포지셔닝/상세페이지/채널 (읽기) | 엠군_네이밍 (저장)  ·  "
+    "이 단계는 **제품명 전용**입니다. 상품명·브랜드명은 05 채널 페이지에서 다룹니다."
+)
 
 cfg = load_settings()
 claude_model_03, gemini_model_03 = models_for_stage("03", cfg)
@@ -149,22 +152,11 @@ if not any(pos_dict.values()):
     st.error("02 포지셔닝 결과가 없습니다 — 네이밍은 02 결과가 필수입니다.")
     st.stop()
 
-# ── Step 4-A: 네이밍 분류 선택 ────────────────────────────
-st.divider()
-naming_type = st.radio(
-    "네이밍 분류",
-    options=["제품명", "브랜드명"],
-    horizontal=True,
-    key="naming_type_radio",
-    help=(
-        "**제품명**: 이 제품 하나의 고유 이름 (상표권 등록 대상). "
-        "키미테·하나로·탑블로 패턴.  \n"
-        "**브랜드명**: 회사·라인의 우산 이름. 여러 제품을 묶는 상위 정체성. "
-        "다이슨·무신사 패턴."
-    ),
-)
+# 03 단계는 '제품명'만 다룬다. 상품명·브랜드명은 05 채널 페이지에서 별도 호출.
+naming_type = "제품명"
 
 # ── Step 4-B: basis 선택 (02 / 04 / 05) ───────────────────
+st.divider()
 st.markdown("**입력 컨텍스트 선택** — 각 단계의 어떤 모델 결과를 03 네이밍 입력으로 쓸지")
 
 _label_fmt = lambda x: {"claude": "🟠 Claude", "gemini": "🔵 Gemini", "(생략)": "— 생략"}[x]
@@ -213,7 +205,7 @@ channel_text = channel_dict.get(channel_basis, "") if channel_basis != "(생략)
 # ── Step 5: 실행 ─────────────────────────────────────────
 st.caption(caption_for_stage("03", cfg))
 
-if st.button(f"🚀 {naming_type} 네이밍 실행 (Claude + Gemini)", type="primary",
+if st.button("🚀 제품명 네이밍 실행 (Claude + Gemini)", type="primary",
              use_container_width=True, disabled=not pos_text.strip()):
     target_dict = {
         "label": selected_target_row.get("라벨") or "",

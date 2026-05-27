@@ -38,7 +38,9 @@ from pipeline.loader import (
     build_user_input_04_1,
     build_user_input_04_b,
     build_user_input_05,
+    build_user_input_listing_name,
     load_agent_prompt,
+    load_listing_name_prompt,
 )
 from pipeline.settings import (
     caption_for_stage,
@@ -578,7 +580,7 @@ if not is_owner():
 with st.expander("🚀 자동 모드 (논스톱 실행)", expanded=False):
     st.caption(
         "01~05를 논스톱으로 돌립니다. 시간이 오래 걸리니 작업시켜놓고 다른 일을 하세요. "
-        "03 네이밍은 분기·DB 구조가 달라 별도 페이지에서 수동 진행합니다."
+        "03 제품명 (네이밍)은 분기·DB 구조가 달라 별도 페이지에서 수동 진행합니다."
     )
 
     auto_mode = st.radio(
@@ -1197,7 +1199,7 @@ if targets_01:
         # 타겟별 작업 이력 bulk 조회 (라디오 라벨에 "완료: 02 포지셔닝, ..." 표시용)
         _STAGE_LABELS_FULL = {
             "02": "02 포지셔닝",
-            "03": "03 네이밍",
+            "03": "03 제품명 (네이밍)",
             "04": "04 상세페이지",
             "05": "05 채널",
         }
@@ -2414,3 +2416,186 @@ if channel_05:
                 marker_style="bracket",
             )
             _version_history_ui("05", "gemini", ss.get("selected_target_db_id"))
+
+    # ── 보조 작업: 리스팅 제목(상품명) / 브랜드명 — 별도 LLM 호출 ──
+    # 05 본체(채널 분석)와 분리된 호출이므로 05 채널 결과 품질에 영향 없음.
+    st.divider()
+    st.subheader("📝 리스팅 제목(상품명) / 브랜드명")
+    st.caption(
+        "05 채널 결과를 바탕으로 채널별 리스팅 제목(상품명)을 생성합니다. "
+        "**별도 LLM 호출**이라 위쪽 채널 분석 결과는 영향받지 않습니다. "
+        "브랜드명은 선택(기본 OFF)."
+    )
+
+    _tid_05b = ss.get("selected_target_db_id")
+    if _tid_05b:
+        try:
+            _naming_rows = storage.get_네이밍(_tid_05b)
+        except Exception:
+            _naming_rows = []
+        _product_names: dict[str, str] = {"claude": "", "gemini": ""}
+        for r in _naming_rows:
+            if r.get("분류") == "제품명":
+                m = r.get("모델")
+                if m in _product_names:
+                    _product_names[m] = r.get("원본_출력") or ""
+
+        _has_product_name = any(v.strip() for v in _product_names.values())
+        if not _has_product_name:
+            st.info(
+                "03 단계에서 제품명을 먼저 확정한 뒤 이 작업을 호출하면 더 정확합니다. "
+                "[🔤 네이밍 페이지](/네이밍)에서 03을 실행하세요. "
+                "(제품명 없이도 진행은 가능합니다)"
+            )
+
+        # 제품명 basis 선택 (둘 다 있을 때만 라디오)
+        _pname_options = [m for m in ("claude", "gemini") if _product_names.get(m, "").strip()]
+        if len(_pname_options) >= 2:
+            _pname_basis = st.radio(
+                "03 제품명 입력으로 쓸 모델 결과",
+                options=_pname_options,
+                horizontal=True,
+                format_func=lambda x: {"claude": "🟠 Claude", "gemini": "🔵 Gemini"}[x],
+                key="basis_listing_pname",
+            )
+        elif _pname_options:
+            _pname_basis = _pname_options[0]
+            st.caption(f"03 제품명: {_pname_basis} (단일)")
+        else:
+            _pname_basis = ""
+
+        _chosen_pname = _product_names.get(_pname_basis, "") if _pname_basis else ""
+
+        # 05 채널 basis 선택 (사용자가 어느 모델의 채널 결과를 입력으로 쓸지)
+        _channel_options = [m for m in ("claude", "gemini") if (channel_05.get(m) or "").strip()]
+        if len(_channel_options) >= 2:
+            _channel_basis_for_listing = st.radio(
+                "05 채널 입력으로 쓸 모델 결과",
+                options=_channel_options,
+                horizontal=True,
+                format_func=lambda x: {"claude": "🟠 Claude", "gemini": "🔵 Gemini"}[x],
+                key="basis_listing_channel",
+            )
+        elif _channel_options:
+            _channel_basis_for_listing = _channel_options[0]
+        else:
+            _channel_basis_for_listing = "claude"
+
+        _chosen_channel_text = channel_05.get(_channel_basis_for_listing, "") or ""
+
+        # 02 포지셔닝 basis는 위쪽 05 본체에서 정한 값 재사용
+        _basis_for_05 = ss.get("basis_05") or "claude"
+        _pos_text_for_listing = (positioning_02.get(_basis_for_05) or "") if positioning_02 else ""
+
+        # 옵션 UI
+        _opt_c1, _opt_c2 = st.columns([3, 2])
+        with _opt_c1:
+            _channel_target = st.selectbox(
+                "대상 채널",
+                options=[
+                    "전체 추천 채널",
+                    "스마트스토어",
+                    "쿠팡",
+                    "11번가",
+                    "카페24",
+                    "기타 (직접 입력)",
+                ],
+                key="listing_channel_target",
+                help="채널별 SEO 가이드가 다르므로 명시. '전체'면 05 결과 상위 1~2개 채널을 자동 선택.",
+            )
+            if _channel_target == "기타 (직접 입력)":
+                _channel_target = st.text_input(
+                    "채널명 직접 입력",
+                    key="listing_channel_target_custom",
+                    placeholder="예: 오늘의집, 자사몰 등",
+                ) or "전체 추천 채널"
+        with _opt_c2:
+            _want_brand = st.checkbox(
+                "🏷️ 브랜드명도 같이 생성",
+                value=False,
+                key="listing_want_brand",
+                help="OFF면 상품명만 생성. 브랜드명은 회사·라인 우산 이름(다이슨·무신사 패턴).",
+            )
+
+        # 실행 버튼
+        _run_listing = st.button(
+            "🚀 리스팅 제목(상품명)" + (" + 브랜드명" if _want_brand else "") + " 생성 (Claude + Gemini)",
+            type="primary",
+            use_container_width=True,
+            disabled=not is_owner() or not _pos_text_for_listing.strip(),
+            key="run_listing_name",
+        )
+
+        if _run_listing:
+            sel_target = _find_selected_target_dict(_tid_05b)
+            if not sel_target:
+                st.error("선택된 타겟 정보를 찾을 수 없습니다. 02부터 다시 실행하세요.")
+                st.stop()
+            target_dict = {
+                "label": sel_target.get("label") or "",
+                "description": _build_target_description(sel_target),
+            }
+            try:
+                _sys_listing = load_listing_name_prompt()
+                _user_listing = build_user_input_listing_name(
+                    product=spec,
+                    target=target_dict,
+                    positioning_text=_pos_text_for_listing,
+                    product_name=_chosen_pname,
+                    channel_text=_chosen_channel_text,
+                    channel_target=_channel_target,
+                    want_brand=_want_brand,
+                    cfg=cfg,
+                )
+            except Exception as e:
+                st.error(f"리스팅 프롬프트 로드 실패: {type(e).__name__}: {e}")
+                st.stop()
+
+            with st.spinner("상품명·브랜드명 생성 중… (Claude + Gemini)"):
+                listing_result = generate_both(
+                    _sys_listing, _user_listing,
+                    claude_model=claude_model_05,
+                    gemini_model=gemini_model_05,
+                )
+
+            # DB 저장 — 분류="상품명", (옵션) "브랜드명"
+            # 모델별 raw_output을 통째로 저장. 한 호출에 상품명·브랜드명 두 절이 함께 들어 있어도
+            # 후속 조회 시 같은 row에서 같이 보임.
+            _save_분류 = "상품명+브랜드명" if _want_brand else "상품명"
+            try:
+                for _m in ("claude", "gemini"):
+                    storage.save_네이밍(
+                        target_id=_tid_05b,
+                        model=_m,
+                        raw_output=listing_result.get(_m, ""),
+                        분류=_save_분류,
+                    )
+                st.success(f"리스팅({_save_분류}) 저장 완료 (타겟_id={_tid_05b})")
+                ss["listing_name_result"] = listing_result
+            except Exception as e:
+                st.error(f"DB 저장 실패: {type(e).__name__}: {e}")
+
+        # 결과 표시 (DB에서 최신 로드)
+        try:
+            _all_naming = storage.get_네이밍(_tid_05b)
+        except Exception:
+            _all_naming = []
+        _listing_rows = [
+            r for r in _all_naming
+            if r.get("분류") in ("상품명", "상품명+브랜드명")
+        ]
+        if _listing_rows:
+            _latest_by_model: dict[str, dict] = {}
+            for r in sorted(_listing_rows, key=lambda x: x.get("id", 0)):
+                _latest_by_model[r.get("모델")] = r
+            if _latest_by_model:
+                st.markdown("**📝 리스팅 결과 (최신)**")
+                _lc, _lg = st.columns(2)
+                with _lc:
+                    _r = _latest_by_model.get("claude")
+                    st.markdown("### 🟠 Claude")
+                    st.markdown((_r or {}).get("원본_출력") or "_(empty)_")
+                with _lg:
+                    _r = _latest_by_model.get("gemini")
+                    st.markdown("### 🔵 Gemini")
+                    st.markdown((_r or {}).get("원본_출력") or "_(empty)_")
