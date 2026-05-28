@@ -45,6 +45,7 @@ from pipeline.supabase_read import (
     list_비전패스_이력,
     set_account_folder,
     set_엠군작업대상,
+    set_is_test,
     update_상품,
     update_시각설명,
     upsert_편집_세션,
@@ -93,16 +94,24 @@ product_id = st.session_state.get("edit_product_id")
 row        = get_product(product_id) or {}
 _is_temp   = row.get("제품명", "").startswith("임시_")
 
-# ── 낙관적 락 — _orig_ts 고정 ────────────────────────────
-# 페이지 첫 로드 시 row.수정일을 session_state에 락으로 저장.
-# 이후 rerun에서도 이 값을 고정 사용해야 진짜 낙관적 락이 동작한다.
-# (자동 갱신 X — 같은 페이지에 머무는 중 row가 새로 fetch되더라도 락은 그대로 유지.
-#  그래야 동료가 그 사이 저장한 경우 충돌 감지됨. 명시적으로 "← 목록으로" / _cancel
-#  / 충돌 메시지 안의 "다시 시도" 버튼에서만 락 해제.)
+# ── 낙관적 락 — _orig_ts ────────────────────────────────
+# 페이지 진입 시 row.수정일을 session_state에 락으로 저장.
+# 같은 페이지에 머무는 중에는 락을 갱신하지 않아야 진짜 낙관적 락이 동작한다 (동료
+# 변경 감지). 그러나 사용자가 페이지를 떠났다가 (사이드바 이동 등) 다시 들어와서
+# row.수정일이 락과 달라졌다면 = 사용자가 새 값을 직접 보고 있는 상태 → 락을 자동
+# 갱신하고 stale conflict 플래그도 클리어 (사용자가 새로고침/목록 우회하지 않아도
+# 자연스럽게 동기화).
 _lock_key = f"_lock_orig_ts__{product_id}" if product_id else None
 _conflict_key = f"_save_conflict__{product_id}" if product_id else None
-if not _is_temp and _lock_key and _lock_key not in st.session_state:
-    st.session_state[_lock_key] = row.get("수정일")
+if not _is_temp and _lock_key:
+    _new_ts = row.get("수정일")
+    if _lock_key not in st.session_state:
+        st.session_state[_lock_key] = _new_ts
+    elif st.session_state[_lock_key] != _new_ts:
+        # 페이지 재진입 — 화면이 새 값을 보여주는 시점에 락도 함께 갱신
+        st.session_state[_lock_key] = _new_ts
+        if _conflict_key:
+            st.session_state.pop(_conflict_key, None)
 
 if _is_temp:
     st.title(f"🆕 신규 제품 등록 — #{product_id}")
@@ -160,7 +169,7 @@ if not _is_temp:
             _ot_at = _ot_at_raw[:16] if _ot_at_raw else "?"
         st.warning(f"⚠️ 지금 **{_ot_name}** 이(가) 편집 중입니다 · 최근 활동 {_ot_at}")
 
-_btn_col1, _btn_col2 = st.columns([1, 4])
+_btn_col1, _btn_col2, _btn_col3 = st.columns([1, 2, 2])
 with _btn_col1:
     if st.button("← 목록으로", key="back_btn"):
         if _is_temp:
@@ -185,14 +194,38 @@ with _btn_col1:
         st.switch_page("pages/1_products.py")
 
 # ── 엠군 작업대상 토글 (임시 레코드 제외, owner/partner 모두 가능) ──
+def _clear_lock_after_self_edit() -> None:
+    """본인 토글 후 호출 — 락/충돌 플래그 클리어.
+    rerun 시 105-106 라인에서 최신 row.수정일로 락이 자동 재설정되어 가짜 충돌 방지.
+    근본 원인: DB 트리거 `상품_수정일_갱신`이 UPDATE마다 수정일을 NOW()로 갱신하므로,
+    토글(=self-edit)도 락과 DB 수정일을 불일치 상태로 만든다.
+    """
+    if _lock_key:
+        st.session_state.pop(_lock_key, None)
+    if _conflict_key:
+        st.session_state.pop(_conflict_key, None)
+
+
 if not _is_temp and product_id:
     _작업대상_현재 = bool(row.get("엠군작업대상", False))
     with _btn_col2:
-        _label = "✅ 엠군 작업대상 (ON)" if _작업대상_현재 else "⬛ 엠군 작업대상 (OFF)"
+        _label = "✅ 엠군 대상 (ON)" if _작업대상_현재 else "⬛ 엠군 대상 (OFF)"
         _btn_type = "primary" if _작업대상_현재 else "secondary"
         if st.button(_label, key="작업대상_toggle_btn", type=_btn_type,
                      help="클릭하면 ON/OFF가 전환됩니다."):
             set_엠군작업대상(product_id, not _작업대상_현재)
+            _clear_lock_after_self_edit()
+            st.rerun()
+
+    # ── 🧪 테스트 레코드 토글 ──
+    _is_test_현재 = bool(row.get("is_test", False))
+    with _btn_col3:
+        _t_label = "🧪 테스트 레코드 (ON)" if _is_test_현재 else "⬛ 테스트 레코드 (OFF)"
+        _t_type = "primary" if _is_test_현재 else "secondary"
+        if st.button(_t_label, key="is_test_toggle_btn", type=_t_type,
+                     help="ON이면 제품 조회의 🧪 테스트 박스에만 표시되어 운영 자료와 분리됩니다."):
+            set_is_test(product_id, not _is_test_현재)
+            _clear_lock_after_self_edit()
             st.rerun()
 
 st.divider()
@@ -283,6 +316,20 @@ def _save(payload: dict) -> None:
                 "(페이지를 이탈하면 값이 사라지니 수정한 필드 값은 따로 메모해두세요.)\n\n"
                 "(페이지를 새로고침 해도 되고, 다른 페이지에 다녀와도 됩니다.)"
             )
+            # 인라인 "다시 시도" 버튼 — 페이지 상단 버튼과 동일 동작.
+            # _save() 안에서는 st.rerun() 없이 return하므로, 이 버튼이 없으면
+            # 상단 배너+버튼이 보이지 않아 사용자가 다음 액션을 못 한다.
+            if st.button(
+                "🔄 동료 최신값 받기 / 다시 시도",
+                key=f"btn_accept_others_save_inline_{product_id}",
+                help="DB의 최신 수정일로 락을 다시 잡습니다. 화면 위쪽 필드 값들도 동료의 최신값으로 갱신됩니다. "
+                     "(주의: 화면에서 직접 입력한 값은 사라지니 먼저 메모하세요.)",
+            ):
+                if _lock_key:
+                    st.session_state.pop(_lock_key, None)
+                if product_id:
+                    st.session_state.pop(f"_save_conflict__{product_id}", None)
+                st.rerun()
             return
         if not payload["제품명"].startswith("임시_"):
             st.session_state.pop("_temp_product_id", None)

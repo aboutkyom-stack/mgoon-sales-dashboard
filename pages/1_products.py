@@ -1,8 +1,8 @@
 """페이지 1 — 상품 조회.
 
-- 완성/진행중/일반 3개 테이블로 분리 조회.
+- 완성/진행중/일반/테스트 4개 테이블로 분리 조회. (테스트 = is_test=True)
 - 각 테이블 검색(이름·id selectbox) + 엠군상태 필터.
-- 세 테이블 공통의 컬럼 표시 설정.
+- 전체 테이블 공통의 컬럼 표시 설정.
 - 행 선택 → 상세 영역. 다른 테이블에서 선택 시 이전 선택 자동 해제.
 - "이 제품으로 파이프라인 실행" 버튼.
 """
@@ -20,6 +20,7 @@ from pipeline.supabase_read import (
     list_products,
     list_엠군상태_values,
     set_엠군작업대상,
+    set_is_test,
 )
 
 _COL_PREFS_FILE = Path(__file__).parent.parent / "settings_columns.json"
@@ -27,6 +28,10 @@ _COL_PREFS_FILE = Path(__file__).parent.parent / "settings_columns.json"
 _COMP_DONE = "✅ 완성"
 _COMP_PROG = "🟡 진행중"
 _COMP_TODO = "⬛ 일반"
+_COMP_TEST = "🧪 테스트"
+
+# 화면에 노출하지 않는 컬럼 (DB 원본 또는 표시용으로 대체된 컬럼)
+_HIDDEN_COLS = {"엠군작업대상", "is_test"}
 
 _HELP_엠군상태 = (
     "**엠군상태** — `상품.엠군상태` 컬럼 값입니다.\n\n"
@@ -108,13 +113,15 @@ image_counts = get_image_counts()
 for r in rows:
     r["_완성도"] = _completeness(r, image_counts.get(r["id"], 0))
 
-n_done = sum(1 for r in rows if r["_완성도"] == _COMP_DONE)
-n_prog = sum(1 for r in rows if r["_완성도"] == _COMP_PROG)
-n_todo = sum(1 for r in rows if r["_완성도"] == _COMP_TODO)
+n_done = sum(1 for r in rows if r["_완성도"] == _COMP_DONE and not r.get("is_test"))
+n_prog = sum(1 for r in rows if r["_완성도"] == _COMP_PROG and not r.get("is_test"))
+n_todo = sum(1 for r in rows if r["_완성도"] == _COMP_TODO and not r.get("is_test"))
+n_test = sum(1 for r in rows if r.get("is_test"))
 
 st.write(
     f"총 **{len(rows)}**개  ·  "
-    f"{_COMP_DONE} **{n_done}** · {_COMP_PROG} **{n_prog}** · {_COMP_TODO} **{n_todo}**"
+    f"{_COMP_DONE} **{n_done}** · {_COMP_PROG} **{n_prog}** · {_COMP_TODO} **{n_todo}** · "
+    f"{_COMP_TEST} **{n_test}**"
 )
 
 # ── DataFrame 빌드 ────────────────────────────────────────
@@ -122,11 +129,14 @@ df_all = pd.DataFrame(rows)
 df_all.insert(1, "🖼️이미지", df_all["id"].apply(lambda x: image_counts.get(x, 0)))
 df_all.insert(2, "완성도", df_all["_완성도"])
 if "엠군작업대상" in df_all.columns:
-    df_all.insert(3, "🎯작업대상", df_all["엠군작업대상"].apply(
+    df_all.insert(3, "🎯엠군 대상", df_all["엠군작업대상"].apply(
         lambda x: "✅" if x else "⬛"
     ))
 
-visible_data_cols = [c for c in df_all.columns if not c.startswith("_")]
+visible_data_cols = [
+    c for c in df_all.columns
+    if not c.startswith("_") and c not in _HIDDEN_COLS
+]
 for col in visible_data_cols:
     if df_all[col].apply(lambda x: isinstance(x, (dict, list))).any():
         df_all[col] = df_all[col].apply(
@@ -164,7 +174,7 @@ def _deselect_all() -> None:
 
 
 # ── 공통 컬럼 표시 설정 ──
-with st.expander("🔧 컬럼 표시 설정 (세 테이블에 공통 적용)", expanded=False):
+with st.expander("🔧 컬럼 표시 설정 (전체 테이블에 공통 적용)", expanded=False):
     b1, b2, _ = st.columns([1, 1, 6])
     b1.button("전체 선택", on_click=_select_all, key="col_all")
     b2.button("전체 해제", on_click=_deselect_all, key="col_none")
@@ -185,20 +195,45 @@ with st.popover("❓ 완성도 기준 보기"):
     st.markdown(_HELP_완성도)
 
 # ── 테이블별 데이터 분리 ──
-df_done = df_all[df_all["완성도"] == _COMP_DONE].reset_index(drop=True)
-df_prog = df_all[df_all["완성도"] == _COMP_PROG].reset_index(drop=True)
-df_todo = df_all[df_all["완성도"] == _COMP_TODO].reset_index(drop=True)
+# 테스트 레코드는 완성/진행중/일반에서 제외하고 테스트 박스에만 표시
+if "is_test" in df_all.columns:
+    _is_test = df_all["is_test"] == True
+else:
+    _is_test = pd.Series([False] * len(df_all), index=df_all.index)
+
+df_done = df_all[~_is_test & (df_all["완성도"] == _COMP_DONE)].reset_index(drop=True)
+df_prog = df_all[~_is_test & (df_all["완성도"] == _COMP_PROG)].reset_index(drop=True)
+df_todo = df_all[~_is_test & (df_all["완성도"] == _COMP_TODO)].reset_index(drop=True)
+df_test = df_all[_is_test].reset_index(drop=True)
+
+_TABLE_KEYS = ("done", "prog", "todo", "test")
 
 # ── 행 선택 동기화용 세션 상태 ──
 if "_prod_selections" not in st.session_state:
-    st.session_state._prod_selections = {"done": [], "prog": [], "todo": []}
+    st.session_state._prod_selections = {k: [] for k in _TABLE_KEYS}
+else:
+    for k in _TABLE_KEYS:
+        st.session_state._prod_selections.setdefault(k, [])
 if "_prod_table_keys" not in st.session_state:
-    st.session_state._prod_table_keys = {"done": 0, "prog": 0, "todo": 0}
+    st.session_state._prod_table_keys = {k: 0 for k in _TABLE_KEYS}
+else:
+    for k in _TABLE_KEYS:
+        st.session_state._prod_table_keys.setdefault(k, 0)
 
 # ─── D안: 일괄 작업대상 토글 — multiselect 카운터 (이 블록 통째로 삭제 가능) ───
 if "_toggle_counter" not in st.session_state:
-    st.session_state._toggle_counter = {"done": 0, "prog": 0, "todo": 0}
+    st.session_state._toggle_counter = {k: 0 for k in _TABLE_KEYS}
+else:
+    for k in _TABLE_KEYS:
+        st.session_state._toggle_counter.setdefault(k, 0)
 # ─── /D안 끝 ───
+
+# ─── 🧪 테스트 일괄 토글 — multiselect 카운터 ───
+if "_test_toggle_counter" not in st.session_state:
+    st.session_state._test_toggle_counter = {k: 0 for k in _TABLE_KEYS}
+else:
+    for k in _TABLE_KEYS:
+        st.session_state._test_toggle_counter.setdefault(k, 0)
 
 
 def _render_table(df_sub: pd.DataFrame, key: str, title: str):
@@ -235,8 +270,8 @@ def _render_table(df_sub: pd.DataFrame, key: str, title: str):
             )
         with c3:
             작업대상_filter = st.selectbox(
-                "🎯작업대상",
-                ["전체", "✅ 작업대상", "⬛ 제외"],
+                "🎯엠군 대상",
+                ["전체", "✅ 대상", "⬛ 제외"],
                 key=f"작업대상_{key}",
             )
 
@@ -248,7 +283,7 @@ def _render_table(df_sub: pd.DataFrame, key: str, title: str):
                 view = view[(view["엠군상태"] == "미시작") | (view["엠군상태"].isna())]
             else:
                 view = view[view["엠군상태"] == status]
-        if 작업대상_filter == "✅ 작업대상" and "엠군작업대상" in view.columns:
+        if 작업대상_filter == "✅ 대상" and "엠군작업대상" in view.columns:
             view = view[view["엠군작업대상"] == True]
         elif 작업대상_filter == "⬛ 제외" and "엠군작업대상" in view.columns:
             view = view[(view["엠군작업대상"] == False) | (view["엠군작업대상"].isna())]
@@ -269,9 +304,9 @@ def _render_table(df_sub: pd.DataFrame, key: str, title: str):
             height=420,
         )
 
-        # ─── D안: 일괄 작업대상 토글 (이 블록 통째로 삭제 가능) ───
+        # ─── D안: 일괄 엠군 대상 토글 (이 블록 통째로 삭제 가능) ───
         if "엠군작업대상" in view.columns:
-            with st.expander("🎯 작업대상 일괄 토글", expanded=(key == "todo")):
+            with st.expander("🎯 엠군 대상 일괄 토글", expanded=(key == "todo")):
                 option_ids = view["id"].tolist()
                 name_local = view.set_index("id")["제품명"].fillna("").to_dict()
                 on_set = set(view[view["엠군작업대상"] == True]["id"].tolist())
@@ -296,7 +331,7 @@ def _render_table(df_sub: pd.DataFrame, key: str, title: str):
                 ):
                     for pid in selected:
                         set_엠군작업대상(int(pid), True)
-                    st.toast(f"✅ {len(selected)}개 작업대상 ON")
+                    st.toast(f"✅ {len(selected)}개 엠군 대상 ON")
                     st.session_state._toggle_counter[key] += 1
                     st.rerun()
                 if bc2.button(
@@ -306,10 +341,54 @@ def _render_table(df_sub: pd.DataFrame, key: str, title: str):
                 ):
                     for pid in selected:
                         set_엠군작업대상(int(pid), False)
-                    st.toast(f"⬛ {len(selected)}개 작업대상 OFF")
+                    st.toast(f"⬛ {len(selected)}개 엠군 대상 OFF")
                     st.session_state._toggle_counter[key] += 1
                     st.rerun()
         # ─── /D안 끝 ───
+
+        # ─── 🧪 테스트 레코드 일괄 토글 ───
+        if "is_test" in view.columns:
+            _expand_test = (key == "test")  # 테스트 박스에서는 펼쳐서 OFF(운영 승격) 편하게
+            with st.expander("🧪 테스트 레코드 일괄 토글", expanded=_expand_test):
+                t_option_ids = view["id"].tolist()
+                t_name_local = view.set_index("id")["제품명"].fillna("").to_dict()
+                t_on_set = set(view[view["is_test"] == True]["id"].tolist())
+
+                def _fmt_test_toggle(pid: int) -> str:
+                    mark = "🧪" if pid in t_on_set else "⬛"
+                    return f"{mark} [{pid}] {t_name_local.get(pid, '')}"
+
+                tms_key = f"test_toggle_ms_{key}_v{st.session_state._test_toggle_counter[key]}"
+                t_selected = st.multiselect(
+                    "토글할 제품 선택 (제품명 일부 입력 가능)",
+                    options=t_option_ids,
+                    format_func=_fmt_test_toggle,
+                    key=tms_key,
+                )
+                tc1, tc2, _ = st.columns([1, 1, 4])
+                if tc1.button(
+                    "🧪 테스트로 이동",
+                    key=f"test_on_{key}",
+                    disabled=not t_selected,
+                    type="primary",
+                    help="선택한 제품의 is_test=True → 🧪 테스트 박스로 이동",
+                ):
+                    for pid in t_selected:
+                        set_is_test(int(pid), True)
+                    st.toast(f"🧪 {len(t_selected)}개 테스트로 이동")
+                    st.session_state._test_toggle_counter[key] += 1
+                    st.rerun()
+                if tc2.button(
+                    "⬛ 운영으로 복귀",
+                    key=f"test_off_{key}",
+                    disabled=not t_selected,
+                    help="선택한 제품의 is_test=False → 완성/진행중/일반 박스로 복귀",
+                ):
+                    for pid in t_selected:
+                        set_is_test(int(pid), False)
+                    st.toast(f"⬛ {len(t_selected)}개 운영으로 복귀")
+                    st.session_state._test_toggle_counter[key] += 1
+                    st.rerun()
 
         return event, view
 
@@ -317,20 +396,31 @@ def _render_table(df_sub: pd.DataFrame, key: str, title: str):
 event_done, view_done = _render_table(df_done, "done", _COMP_DONE)
 event_prog, view_prog = _render_table(df_prog, "prog", _COMP_PROG)
 event_todo, view_todo = _render_table(df_todo, "todo", _COMP_TODO)
+event_test, view_test = _render_table(df_test, "test", _COMP_TEST)
 
 # ── 행 클릭 = 자동 편집 페이지 전환 ──
 prev_sel = dict(st.session_state._prod_selections)
-curr_sel = {
-    "done": list(event_done.selection.rows) if event_done is not None else [],
-    "prog": list(event_prog.selection.rows) if event_prog is not None else [],
-    "todo": list(event_todo.selection.rows) if event_todo is not None else [],
+_events = {
+    "done": event_done,
+    "prog": event_prog,
+    "todo": event_todo,
+    "test": event_test,
 }
-view_map = {"done": view_done, "prog": view_prog, "todo": view_todo}
+curr_sel = {
+    k: (list(ev.selection.rows) if ev is not None else [])
+    for k, ev in _events.items()
+}
+view_map = {
+    "done": view_done,
+    "prog": view_prog,
+    "todo": view_todo,
+    "test": view_test,
+}
 
 # 새로 selection이 생긴 (이전과 다르고 비어있지 않은) 테이블 찾기
 changed = [
-    k for k in ("done", "prog", "todo")
-    if curr_sel[k] != prev_sel[k] and curr_sel[k]
+    k for k in _TABLE_KEYS
+    if curr_sel[k] != prev_sel.get(k, []) and curr_sel[k]
 ]
 
 if changed:
@@ -339,9 +429,9 @@ if changed:
     if view is not None and not view.empty:
         chosen_id = int(view.iloc[curr_sel[active_table][0]]["id"])
         # 다음 페이지 진입 시 새 dataframe key로 그려져 selection 자동 클리어
-        for k in ("done", "prog", "todo"):
+        for k in _TABLE_KEYS:
             st.session_state._prod_table_keys[k] += 1
-        st.session_state._prod_selections = {"done": [], "prog": [], "todo": []}
+        st.session_state._prod_selections = {k: [] for k in _TABLE_KEYS}
         st.session_state["edit_mode"] = "edit"
         st.session_state["edit_product_id"] = chosen_id
         st.switch_page("pages/2_product_edit.py")

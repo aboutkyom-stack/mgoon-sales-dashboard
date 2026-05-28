@@ -308,6 +308,13 @@ def set_엠군작업대상(상품_id: int, value: bool) -> None:
     _client().table("상품").update({"엠군작업대상": value}).eq("id", 상품_id).execute()
 
 
+# ── is_test 토글 (테스트 레코드 구분) ─────────────────────────
+
+def set_is_test(상품_id: int, value: bool) -> None:
+    """상품.is_test 값을 설정한다. True면 테스트 레코드로 격리."""
+    _client().table("상품").update({"is_test": value}).eq("id", 상품_id).execute()
+
+
 # ── 엠군상태 업데이트 ─────────────────────────────────────
 
 def update_엠군상태(상품_id: int, 상태: str) -> None:
