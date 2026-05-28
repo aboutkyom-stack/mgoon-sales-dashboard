@@ -550,6 +550,45 @@ def delete_편집_세션(상품_id: int, 사용자명: str) -> None:
     _client().table("편집_세션").delete().eq("상품_id", 상품_id).eq("사용자명", 사용자명).execute()
 
 
+# ── 접속_세션 (사용자 presence — owner 사이드바 배지) ──────
+
+def upsert_접속_세션(사용자명: str, 현재페이지: str | None = None) -> None:
+    """접속 세션 UPSERT — 사용자명 PK 충돌 시 마지막_활동시각/현재페이지 갱신."""
+    from datetime import datetime, timezone
+
+    payload = {
+        "사용자명": 사용자명,
+        "마지막_활동시각": datetime.now(timezone.utc).isoformat(),
+    }
+    if 현재페이지 is not None:
+        payload["현재페이지"] = 현재페이지
+    _client().table("접속_세션").upsert(payload, on_conflict="사용자명").execute()
+
+
+def get_active_접속_세션(ttl_min: int = 2) -> list[dict]:
+    """ttl_min 분 이내 활성 접속 세션 전체 목록.
+
+    사이드바 배지(owner 전용)에서 현재 누가 접속 중인지 표시할 때 사용.
+    """
+    from datetime import datetime, timezone, timedelta
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=ttl_min)).isoformat()
+    res = (
+        _client()
+        .table("접속_세션")
+        .select("*")
+        .gte("마지막_활동시각", cutoff)
+        .order("마지막_활동시각", desc=True)
+        .execute()
+    )
+    return res.data or []
+
+
+def delete_접속_세션(사용자명: str) -> None:
+    """접속 세션 row 즉시 삭제 (현재는 미사용 — 페이지 닫힘 감지가 어려워 TTL 의존)."""
+    _client().table("접속_세션").delete().eq("사용자명", 사용자명).execute()
+
+
 def upsert_파일(상품_id: int, files: list[dict], 계정: str) -> int:
     """Drive 스캔 결과를 상품_파일에 upsert. 드라이브_파일_id 기준 중복 방지.
 

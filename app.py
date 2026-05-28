@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import streamlit as st
 
+from pipeline.presence_ui import render_접속자_배지
+
 st.set_page_config(page_title="엠군 파이프라인", page_icon="🎯", layout="wide")
 
 pg = st.navigation(
@@ -26,4 +28,8 @@ pg = st.navigation(
         ],
     }
 )
+
+# 사이드바 접속자 배지 (owner 전용 — 동료에겐 노출 X) + heartbeat upsert
+render_접속자_배지()
+
 pg.run()
