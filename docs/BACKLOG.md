@@ -10,6 +10,42 @@
 
 ## 활성 작업
 
+### 🟡 사이드바 접속자 배지 — 사용자 식별(이메일/이름 자동 매핑)
+
+- **상황 (2026-05-28)**: 사이드바 `👥 접속 중 N명` 배지(owner 전용)는 username을 SSO 이메일로 자동 매핑하려 했으나, **Streamlit Community Cloud의 Restricted access는 이메일을 앱 코드에 노출하지 않음** (클라우드/로컬 모두 `st.user.to_dict() = {}` 확인). 결과적으로 클라우드 사용자 전원이 `partner(동료)`로 묶임. 임시로 **세션별 카운트(×N)**만 지원 — 동료 N명 접속 중인지는 알 수 있어도 누가인지는 모름.
+- **목표**: 동료별로 이름/이메일 자동 식별해 누가 접속 중인지 정확히 보이게.
+
+- **옵션 A — Streamlit OIDC 직접 통합 (정통, 작업 多)**
+  - Google OAuth client 신규 발급 + redirect URI 등록 (`https://auto-sales-wktrade.streamlit.app/oauth2callback`)
+  - Cloud secrets에 `[auth]` / `[auth.google]` 섹션 + `cookie_secret`
+  - `requirements.txt`에 `streamlit>=1.42` pin
+  - 코드에 `st.login("google")` / `st.logout` 통합, login page 분기
+  - 동료가 접속 시 Google 로그인 1회 클릭
+  - 결과: `st.user.email` 자동 채워짐 → 기존 `pipeline/role.py:_sso_email()` 이 그대로 동작
+
+- **옵션 B — 쿼리스트링 `?as=voyager` (작업 少, 우선 추천)**
+  - 동료에게 각각 다른 URL 알려줌:
+    - `https://auto-sales-wktrade.streamlit.app/?as=aboutkyom`
+    - `https://auto-sales-wktrade.streamlit.app/?as=voyager`
+    - `https://auto-sales-wktrade.streamlit.app/?as=donnamoo`
+    - `https://auto-sales-wktrade.streamlit.app/?as=(4번째)`
+  - 코드: `st.query_params.get("as")`로 읽어 username 우선순위에 끼움. `pipeline/role.py:current_username()` 안.
+  - 로컬은 `.env`에 `LOCAL_USER=aboutkyom` 추가 fallback.
+  - 동료는 북마크 1회 → 자동
+  - 단점: URL 위조 가능 (4인 내부 도구라 무방)
+  - 작업량: 10~20줄
+
+- **옵션 C — 사이드바 수동 입력 (작업 中)**
+  - 사이드바에 "내 이름" 입력 + session_state 저장
+  - 동료가 매 세션 1회 입력. 잊을 수 있음
+
+- **현재 코드 상태**:
+  - `pipeline/role.py:_sso_email()` — Streamlit Cloud SSO 시도 코드 유지 (Cloud가 향후 OIDC 정보 노출하면 자동 동작)
+  - `pipeline/presence_ui.py` — 임시 SSO 디버그 expander 제거 완료
+  - DB `접속_세션` 테이블 `세션_id PK`로 변경 — 동일 username 여러 세션도 카운트 정확
+- **관련 파일**: `pipeline/role.py`, `pipeline/presence_ui.py`, `pipeline/supabase_read.py`, `db/add_접속_세션.sql`
+
+
 ### 🟡 본인 Google 계정으로 OAuth 전환
 
 - **상황**: 현재 동료 계정 2개(`voyager`·`donnamoo`)로 운영. 동료가 pickle 발급·갱신 해줘야 하는 의존 구조.

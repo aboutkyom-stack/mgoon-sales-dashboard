@@ -1,15 +1,16 @@
-"""사이드바 접속자 배지 — owner 전용.
-
-is_owner() 체크 후 사이드바 상단에 활성 접속자 수/이름 배지 렌더.
-heartbeat upsert도 함께 처리 (30초 debounce).
+"""사이드바 접속자 배지 — owner 전용 표시 + 모든 사용자 heartbeat.
 
 페이지마다 진입 직후 1회 호출:
     from pipeline.presence_ui import render_접속자_배지
     render_접속자_배지()
+
+스키마(접속_세션): 세션_id PK + 사용자명. 동일 username 다중 세션 카운트 가능.
 """
 from __future__ import annotations
 
 import time
+import uuid
+from collections import Counter
 from datetime import datetime, timezone, timedelta
 
 import streamlit as st
@@ -35,55 +36,30 @@ def _format_kst_hhmm(iso_str: str) -> str:
         return iso_str[11:16] if len(iso_str) >= 16 else iso_str
 
 
-def _debug_sso_in_sidebar() -> None:
-    """임시 — Streamlit Cloud SSO 진단용. 원인 확인 후 제거 예정."""
-    with st.sidebar:
-        with st.expander("🔧 SSO 디버그 (임시)", expanded=False):
-            for attr in ("user", "experimental_user"):
-                user_obj = getattr(st, attr, None)
-                st.caption(f"**st.{attr}** = `{user_obj!r}`")
-                if user_obj is None:
-                    continue
-                try:
-                    v = getattr(user_obj, "email", "NO_ATTR")
-                    st.caption(f"  .email (attr) = `{v!r}`")
-                except Exception as e:
-                    st.caption(f"  .email (attr) ERR: {e}")
-                try:
-                    v = user_obj["email"]
-                    st.caption(f"  ['email'] (dict) = `{v!r}`")
-                except Exception as e:
-                    st.caption(f"  ['email'] (dict) ERR: {e}")
-                try:
-                    d = user_obj.to_dict()
-                    st.caption(f"  to_dict() = `{d!r}`")
-                except Exception as e:
-                    st.caption(f"  to_dict() ERR: {e}")
-            try:
-                from pipeline.role import _sso_email, current_username as _cu
-                st.caption(f"**_sso_email()** = `{_sso_email()!r}`")
-                st.caption(f"**current_username()** = `{_cu()!r}`")
-            except Exception as e:
-                st.caption(f"role.py 호출 ERR: {e}")
+def _get_session_id() -> str:
+    """이 브라우저 세션 고유 UUID. session_state에 1회 생성 후 재사용."""
+    sid = st.session_state.get("_presence_session_id")
+    if not sid:
+        sid = uuid.uuid4().hex
+        st.session_state["_presence_session_id"] = sid
+    return sid
 
 
 def render_접속자_배지() -> None:
     """사이드바 활성 접속자 표시 + heartbeat upsert.
 
-    - heartbeat upsert는 **모든 사용자**가 수행해야 owner가 전체 접속자를 볼 수 있다.
-    - 배지(사이드바 expander) **표시**만 owner 전용(동료에게는 노출 X).
+    - heartbeat upsert는 **모든 사용자**가 수행 (owner가 전체 접속자를 볼 수 있게).
+    - 배지(사이드바 expander) **표시**만 owner 전용.
     페이지 진입 직후 1회 호출.
     """
-    # 임시 디버그 — SSO 이메일 진단. 확인 후 제거.
-    _debug_sso_in_sidebar()
-
     me = current_username()
+    sid = _get_session_id()
 
-    # 1) heartbeat upsert (30초 debounce) — owner/partner 무관 모두 수행
+    # 1) heartbeat upsert (30초 debounce) — 모든 사용자
     _now = time.time()
     if _now - st.session_state.get("_presence_last_upsert", 0) > _HEARTBEAT_DEBOUNCE_SEC:
         try:
-            upsert_접속_세션(me)
+            upsert_접속_세션(sid, me)
             st.session_state["_presence_last_upsert"] = _now
         except Exception:
             pass
@@ -100,11 +76,22 @@ def render_접속자_배지() -> None:
     if not active:
         return
 
-    # 3) 사이드바 배지 (expander — 평소엔 숫자만, 클릭 시 이름 펼침)
+    # 3) 사이드바 배지 — username별 그룹화 + 세션 카운트
+    name_counts = Counter(row.get("사용자명") or "?" for row in active)
+    # 그룹별 가장 최근 활동시각
+    last_seen: dict[str, str] = {}
+    for row in active:
+        n = row.get("사용자명") or "?"
+        ts = row.get("마지막_활동시각", "") or ""
+        if n not in last_seen or ts > last_seen[n]:
+            last_seen[n] = ts
+
+    total_sessions = len(active)
+
     with st.sidebar:
-        with st.expander(f"👥 접속 중 {len(active)}명", expanded=False):
-            for row in active:
-                name = row.get("사용자명") or "?"
+        with st.expander(f"👥 접속 중 {total_sessions}명", expanded=False):
+            for name, cnt in name_counts.most_common():
                 tag = " (나)" if name == me else ""
-                hhmm = _format_kst_hhmm(row.get("마지막_활동시각", "") or "")
-                st.caption(f"• {name}{tag} · {hhmm}")
+                multi = f" ×{cnt}" if cnt > 1 else ""
+                hhmm = _format_kst_hhmm(last_seen.get(name, ""))
+                st.caption(f"• {name}{tag}{multi} · {hhmm}")
