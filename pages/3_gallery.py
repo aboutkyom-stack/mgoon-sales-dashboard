@@ -62,6 +62,9 @@ with st.expander("💾 Drive 저장공간", expanded=False):
 
         with st.spinner("Drive 사용량 조회 중…"):
             quota_list = _cached_quota()
+            # 에러 결과는 캐시에 박히지 않도록 — 토큰 회복 시 다음 진입 때 즉시 반영
+            if any(q.get("error") for q in quota_list):
+                _cached_quota.clear()
 
         cols = st.columns(len(quota_list)) if quota_list else []
         for i, q in enumerate(quota_list):
