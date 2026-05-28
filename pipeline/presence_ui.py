@@ -35,6 +35,38 @@ def _format_kst_hhmm(iso_str: str) -> str:
         return iso_str[11:16] if len(iso_str) >= 16 else iso_str
 
 
+def _debug_sso_in_sidebar() -> None:
+    """임시 — Streamlit Cloud SSO 진단용. 원인 확인 후 제거 예정."""
+    with st.sidebar:
+        with st.expander("🔧 SSO 디버그 (임시)", expanded=False):
+            for attr in ("user", "experimental_user"):
+                user_obj = getattr(st, attr, None)
+                st.caption(f"**st.{attr}** = `{user_obj!r}`")
+                if user_obj is None:
+                    continue
+                try:
+                    v = getattr(user_obj, "email", "NO_ATTR")
+                    st.caption(f"  .email (attr) = `{v!r}`")
+                except Exception as e:
+                    st.caption(f"  .email (attr) ERR: {e}")
+                try:
+                    v = user_obj["email"]
+                    st.caption(f"  ['email'] (dict) = `{v!r}`")
+                except Exception as e:
+                    st.caption(f"  ['email'] (dict) ERR: {e}")
+                try:
+                    d = user_obj.to_dict()
+                    st.caption(f"  to_dict() = `{d!r}`")
+                except Exception as e:
+                    st.caption(f"  to_dict() ERR: {e}")
+            try:
+                from pipeline.role import _sso_email, current_username as _cu
+                st.caption(f"**_sso_email()** = `{_sso_email()!r}`")
+                st.caption(f"**current_username()** = `{_cu()!r}`")
+            except Exception as e:
+                st.caption(f"role.py 호출 ERR: {e}")
+
+
 def render_접속자_배지() -> None:
     """사이드바 활성 접속자 표시 + heartbeat upsert.
 
@@ -42,6 +74,9 @@ def render_접속자_배지() -> None:
     - 배지(사이드바 expander) **표시**만 owner 전용(동료에게는 노출 X).
     페이지 진입 직후 1회 호출.
     """
+    # 임시 디버그 — SSO 이메일 진단. 확인 후 제거.
+    _debug_sso_in_sidebar()
+
     me = current_username()
 
     # 1) heartbeat upsert (30초 debounce) — owner/partner 무관 모두 수행

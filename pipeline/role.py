@@ -23,14 +23,29 @@ def _sso_email() -> str:
     """Streamlit Cloud Restricted access에서 로그인한 Google 이메일.
 
     로컬·SSO 미인증 시 빈 문자열. streamlit 1.42+의 `st.user`와
-    이전 버전의 `st.experimental_user` 양쪽을 시도한다.
+    이전 버전의 `st.experimental_user` 양쪽 시도, 각각 attribute/dict 접근 모두 fallback.
     """
     for attr in ("user", "experimental_user"):
         try:
             user_obj = getattr(st, attr, None)
             if user_obj is None:
                 continue
-            email = getattr(user_obj, "email", "") or ""
+            # 1) attribute access (st.user.email)
+            email = getattr(user_obj, "email", None)
+            # 2) dict-style access (st.experimental_user["email"])
+            if not email:
+                try:
+                    email = user_obj["email"]
+                except Exception:
+                    email = None
+            # 3) to_dict() fallback
+            if not email:
+                try:
+                    d = user_obj.to_dict()
+                    if isinstance(d, dict):
+                        email = d.get("email")
+                except Exception:
+                    pass
             if email:
                 return str(email).strip()
         except Exception:
