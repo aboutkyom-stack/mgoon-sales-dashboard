@@ -10,42 +10,6 @@
 
 ## 활성 작업
 
-### 🟡 사이드바 접속자 배지 — 사용자 식별(이메일/이름 자동 매핑)
-
-- **상황 (2026-05-28)**: 사이드바 `👥 접속 중 N명` 배지(owner 전용)는 username을 SSO 이메일로 자동 매핑하려 했으나, **Streamlit Community Cloud의 Restricted access는 이메일을 앱 코드에 노출하지 않음** (클라우드/로컬 모두 `st.user.to_dict() = {}` 확인). 결과적으로 클라우드 사용자 전원이 `partner(동료)`로 묶임. 임시로 **세션별 카운트(×N)**만 지원 — 동료 N명 접속 중인지는 알 수 있어도 누가인지는 모름.
-- **목표**: 동료별로 이름/이메일 자동 식별해 누가 접속 중인지 정확히 보이게.
-
-- **옵션 A — Streamlit OIDC 직접 통합 (정통, 작업 多)**
-  - Google OAuth client 신규 발급 + redirect URI 등록 (`https://auto-sales-wktrade.streamlit.app/oauth2callback`)
-  - Cloud secrets에 `[auth]` / `[auth.google]` 섹션 + `cookie_secret`
-  - `requirements.txt`에 `streamlit>=1.42` pin
-  - 코드에 `st.login("google")` / `st.logout` 통합, login page 분기
-  - 동료가 접속 시 Google 로그인 1회 클릭
-  - 결과: `st.user.email` 자동 채워짐 → 기존 `pipeline/role.py:_sso_email()` 이 그대로 동작
-
-- **옵션 B — 쿼리스트링 `?as=voyager` (작업 少, 우선 추천)**
-  - 동료에게 각각 다른 URL 알려줌:
-    - `https://auto-sales-wktrade.streamlit.app/?as=aboutkyom`
-    - `https://auto-sales-wktrade.streamlit.app/?as=voyager`
-    - `https://auto-sales-wktrade.streamlit.app/?as=donnamoo`
-    - `https://auto-sales-wktrade.streamlit.app/?as=(4번째)`
-  - 코드: `st.query_params.get("as")`로 읽어 username 우선순위에 끼움. `pipeline/role.py:current_username()` 안.
-  - 로컬은 `.env`에 `LOCAL_USER=aboutkyom` 추가 fallback.
-  - 동료는 북마크 1회 → 자동
-  - 단점: URL 위조 가능 (4인 내부 도구라 무방)
-  - 작업량: 10~20줄
-
-- **옵션 C — 사이드바 수동 입력 (작업 中)**
-  - 사이드바에 "내 이름" 입력 + session_state 저장
-  - 동료가 매 세션 1회 입력. 잊을 수 있음
-
-- **현재 코드 상태**:
-  - `pipeline/role.py:_sso_email()` — Streamlit Cloud SSO 시도 코드 유지 (Cloud가 향후 OIDC 정보 노출하면 자동 동작)
-  - `pipeline/presence_ui.py` — 임시 SSO 디버그 expander 제거 완료
-  - DB `접속_세션` 테이블 `세션_id PK`로 변경 — 동일 username 여러 세션도 카운트 정확
-- **관련 파일**: `pipeline/role.py`, `pipeline/presence_ui.py`, `pipeline/supabase_read.py`, `db/add_접속_세션.sql`
-
-
 ### 🟡 본인 Google 계정으로 OAuth 전환
 
 - **상황**: 현재 동료 계정 2개(`voyager`·`donnamoo`)로 운영. 동료가 pickle 발급·갱신 해줘야 하는 의존 구조.
@@ -69,6 +33,107 @@
 - **위치**: `pipeline/loader.py:21-22`, `pipeline/lint.py:28-29`
 - **관련 호출부**: `pipeline/auto_pipeline.py:run_stage_04`, `pages/2_pipeline.py` Step 3 (04 상세페이지)
 - **04_b 통합은 별도 항목**: ↑ 위 "🟡 04_b 검수 자동화 통합" 참조
+
+
+### 🟡 동시 접속자 식별 / 동시편집 알람 — Streamlit Cloud 한계로 보류 (2026-05-28)
+
+> ⚠️ **반드시 시도 전에 본 섹션 정독**. 단순한 SSO 매핑처럼 보이지만 3중 한계가 있어 한 번에 같이 풀어야 한다. 이번 시도(2026-05-28)는 보류 결정 — 코드는 모두 revert, DB 테이블만 휴면 상태로 남김.
+
+#### 원래 사용자 요청 (질문 두 가지)
+1. **동시편집 알람 일반화**: 기존 `편집_세션` 동시편집 ⚠️ 배지가 `APP_ROLE` 기반 username("owner(나)"/"partner(동료)")만 사용하여, 같은 APP_ROLE의 동료끼리(예: partner 4명) 동시 편집 시 자기 자신으로 인식해 배지가 안 뜸. **이메일 단위로 식별**되어야 함.
+2. **현재 접속자 사이드바 배지**: 사용자(owner)만 볼 수 있는 사이드바에 `👥 접속 중 N명` 배지. 누가 동시 접속 중인지 표시.
+
+두 기능 모두 **사용자별 식별(username)이 정확해야** 동작한다.
+
+#### 발견한 한계 ① — Streamlit Community Cloud의 SSO 비노출 (가장 큰 함정)
+
+- **가설**: Restricted access의 Google SSO 이메일을 `st.experimental_user.email` / `st.user.email`로 받을 수 있을 것
+- **실측**: 디버그 expander로 직접 확인 (스샷 보관: 클라우드 + 로컬 4건)
+  ```
+  st.user = <UserInfoProxy object at 0x...>      ← 객체는 있음
+  .email (attr) = NO_ATTR                          ← attribute 없음
+  ['email'] (dict) ERR: 'st.user has no key "email"'  ← dict access 실패
+  to_dict() = {}                                   ← 완전 빈 dict
+  ```
+- **결론**: Streamlit Community Cloud의 **Restricted access는 단순 게이트일 뿐, 앱 코드에 사용자 이메일을 제공하지 않는다**. 별도 OIDC 통합을 명시적으로 설정해야만 `st.user.email`이 채워짐.
+- 이 사실은 Streamlit 공식 문서에 명확히 안 적혀 있어 한 번 직접 시도해 본 후에야 알게 됨.
+
+#### 발견한 한계 ② — Streamlit rerun 모델 (presence 기능의 본질적 장벽)
+
+- presence(접속자 배지)는 heartbeat upsert(주기적 DB row 갱신)에 의존
+- heartbeat는 **페이지 rerun 시 호출**됨
+- Streamlit은 **사용자가 위젯을 건드릴 때만 rerun** — 페이지를 그냥 보고만 있으면 rerun 없음
+- **결과**: 활동 중인 사용자(나)는 잡히고, 보고만 있는 partner는 TTL 만료로 사라짐 → 비대칭 → 신뢰성 낮음
+- 해결책: `streamlit-autorefresh` 또는 `st.fragment`로 자동 rerun 도입 필요 (페이지 깜빡임/부하 trade-off)
+
+#### 발견한 한계 ③ — session_state 휘발 (카운트 누적 버그)
+
+- `_presence_session_id` UUID를 `st.session_state`에 저장하는 방식 시도
+- 새로고침 시 session_state 휘발 → 매번 새 UUID 생성 → DB row 누적 → 카운트 부풀어짐 (8회 새로고침 = 8명 표시 확인)
+- 해결책: URL `?sid=xxx`에 박거나 쿠키 사용 (URL 지저분 단점)
+
+#### 본 시도 후 코드 상태 (2026-05-28 보류 결정)
+
+| 파일 | 처리 |
+|---|---|
+| `app.py` | **revert** (`render_접속자_배지()` 호출/import 제거) |
+| `pipeline/role.py` | **revert** (SSO 이메일 fallback 제거, 원래 APP_ROLE 기반으로) |
+| `pipeline/supabase_read.py` | **revert** (`upsert/get_active/delete_접속_세션` 3개 함수 제거) |
+| `pipeline/presence_ui.py` | **삭제** |
+| `db/add_접속_세션.sql` | **유지(휴면)** — 미래 재시도 시 마이그레이션 스킵 또는 DROP & 재실행 |
+| `db/run_add_접속_세션.py` | **유지(휴면)** |
+| DB `접속_세션` 테이블 | **유지(휴면)** — 데이터 0 row, 무해. DROP 원하면 `DROP TABLE 접속_세션;` 한 줄. |
+| DB `편집_세션` 테이블 | **운영 중** (영향 없음). 단 SSO 식별 없어 같은 APP_ROLE 동료끼리 동시편집 알람 작동 안 함 — 질문1 미해결 상태. |
+
+#### 다음 시도 시 — 한 번에 처리해야 할 것 (셋 중 하나라도 빠지면 또 보류)
+
+1. **SSO 사용자 식별** — 옵션 A·B·C 중 선택 (아래)
+2. **자동 rerun** — `streamlit-autorefresh` 또는 `st.fragment` (아래)
+3. **session_state 휘발 보완** — URL `?sid=` 또는 쿠키
+
+#### 사용자 식별 옵션 (상세)
+
+- **A. Streamlit OIDC 직접 통합 (정통, 작업 多)**
+  - Google OAuth client 신규 발급 + redirect URI 등록 (`https://auto-sales-wktrade.streamlit.app/oauth2callback`)
+  - Cloud secrets에 `[auth]` / `[auth.google]` 섹션 + `cookie_secret`
+  - `requirements.txt`에 `streamlit>=1.42` pin
+  - 코드에 `st.login("google")` / `st.logout` 통합, login page 분기
+  - 동료가 접속 시 Google 로그인 1회 클릭
+  - 결과: `st.user.email` 자동 채워짐
+- **B. 쿼리스트링 `?as=voyager` (작업 少, 우선 추천)**
+  - 동료에게 각각 다른 URL 알려줌:
+    - `https://auto-sales-wktrade.streamlit.app/?as=aboutkyom`
+    - `https://auto-sales-wktrade.streamlit.app/?as=voyager`
+    - `https://auto-sales-wktrade.streamlit.app/?as=donnamoo`
+    - `https://auto-sales-wktrade.streamlit.app/?as=(4번째)`
+  - 코드: `st.query_params.get("as")`로 읽어 username. `pipeline/role.py:current_username()`에 끼움
+  - 로컬은 `.env`에 `LOCAL_USER=aboutkyom` 추가 fallback
+  - 동료는 북마크 1회 → 자동. 단점: URL 위조 가능(4인 내부 도구라 무방)
+- **C. 사이드바 수동 입력** — "내 이름" 입력 + session_state 저장. 동료가 매 세션 1회 입력. 잊을 수 있음
+
+#### 자동 rerun 옵션
+
+- **A. `streamlit-autorefresh`** — `pip install streamlit-autorefresh`, requirements.txt에 추가, `st_autorefresh(interval=20_000)` 한 줄 호출. 페이지 전체 rerun. 입력 중 깜빡임 가능.
+- **B. `st.fragment` + 부분 autorefresh** — 사이드바 영역만 rerun. 메인 영역 깜빡 X. streamlit 1.37+ 필요. 깔끔하지만 fragment 패턴 학습 필요.
+
+#### session_state 휘발 보완 옵션
+
+- **A. URL `?sid=`에 박기** — `st.query_params["sid"] = uuid` 1회 박고 이후 새로고침에서도 같은 UUID 재사용. multipage navigation에서 query string 보존 여부 확인 필요. URL 지저분.
+- **B. 쿠키 lib** — `streamlit-cookies-controller` 등. 의존성 추가. 가장 정확.
+
+#### 관련 git 커밋 (이번 시도 이력)
+
+- `feat: 동시 접속자 사이드바 배지 + SSO 이메일 식별` 류의 커밋 (실패 시도 본체)
+- `revert: presence 기능 보류 — SSO/rerun/세션 휘발 3중 한계 발견` 커밋 (이 정리)
+- 재시도 시: revert 커밋 이전 코드를 참고하면 사이드바 배지·heartbeat·세션 카운트 패턴 회수 가능 (`git log --all -- pipeline/presence_ui.py`)
+
+#### 관련 파일 (재시도 시 진입점)
+
+- `pipeline/role.py` — `current_username()` 확장 포인트 (옵션 B의 `st.query_params` 분기 여기서)
+- `pipeline/supabase_read.py` — 접속_세션 함수 패턴 (git log에서 회수)
+- `pipeline/presence_ui.py` (삭제됨, git history) — 사이드바 배지 + heartbeat 패턴
+- `db/add_접속_세션.sql` (휴면) — 테이블 스키마 `세션_id PK + 사용자명 + 마지막_활동시각`
+- `pages/2_product_edit.py:136~161` — 동시편집 알람 부분 (`current_username()`만 식별되면 자동 동작)
 
 ---
 
