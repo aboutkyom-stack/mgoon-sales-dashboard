@@ -24,3 +24,13 @@ _backups/
 
 # 테스트 데이터 (이미지·영상 등 바이너리)
 테스트/
+
+# DB 디렉토리의 임시 출력·덤프 (Supabase OpenAPI dump, psql 출력 등)
+db/out.txt
+db/*.dump.txt
+db/*.tmp
+db/*.log
+
+# 일반 임시·로그 파일
+*.tmp
+*.log
