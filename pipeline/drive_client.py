@@ -115,7 +115,7 @@ def _get_credentials(label: str):
 
     # 3. 만료 처리 + 양쪽 동기화
     if not creds.valid:
-        if creds.expired and creds.refresh_token:
+        if creds.refresh_token:
             creds.refresh(Request())
             # pickle 갱신 (로컬에서 pickle 쓰던 경우만)
             if token_source == "pickle":
