@@ -16,6 +16,8 @@ import streamlit as st
 
 from pipeline.supabase_read import (
     delete_임시_products,
+    format_file_counts,
+    get_file_counts_by_type,
     get_image_counts,
     list_products,
     list_엠군상태_values,
@@ -110,6 +112,7 @@ if not rows:
     st.stop()
 
 image_counts = get_image_counts()
+file_counts = get_file_counts_by_type()
 for r in rows:
     r["_완성도"] = _completeness(r, image_counts.get(r["id"], 0))
 
@@ -126,7 +129,13 @@ st.write(
 
 # ── DataFrame 빌드 ────────────────────────────────────────
 df_all = pd.DataFrame(rows)
-df_all.insert(1, "🖼️이미지", df_all["id"].apply(lambda x: image_counts.get(x, 0)))
+df_all.insert(
+    1,
+    "📁파일",
+    df_all["id"].apply(
+        lambda x: format_file_counts(file_counts.get(x, {"image": 0, "video": 0, "etc": 0}))
+    ),
+)
 df_all.insert(2, "완성도", df_all["_완성도"])
 if "엠군작업대상" in df_all.columns:
     df_all.insert(3, "🎯엠군 대상", df_all["엠군작업대상"].apply(
@@ -236,10 +245,77 @@ else:
         st.session_state._test_toggle_counter.setdefault(k, 0)
 
 
+def _rescan_products(product_ids: list[int], progress_label: str = "재스캔") -> tuple[int, list[str]]:
+    """제품 리스트의 매핑된 Drive 폴더를 모두 재스캔.
+
+    Returns:
+        (total_upsert: 총 upsert된 row 수, errors: 에러 메시지 리스트)
+    """
+    try:
+        from pipeline.drive_client import build_service, scan_folder_to_파일_rows
+        from pipeline.supabase_read import get_product, list_account_folders, upsert_파일
+    except ImportError as e:
+        st.error(f"클라이언트 로드 실패: {e}")
+        return 0, []
+
+    total_upsert = 0
+    errors: list[str] = []
+    service_cache: dict[str, object] = {}  # 계정당 service 1회만 빌드
+
+    n = len(product_ids)
+    if n == 0:
+        return 0, []
+
+    prog = st.progress(0.0, text=f"{progress_label} 준비 중… 0/{n}")
+
+    for i, pid in enumerate(product_ids):
+        try:
+            p = get_product(pid)
+            if not p:
+                continue
+            folders = list_account_folders(p)
+            if not folders:
+                # 매핑된 폴더 없으면 스킵 (에러는 아님)
+                prog.progress((i + 1) / n, text=f"{progress_label} 폴더 없음 스킵… {i+1}/{n}")
+                continue
+
+            pname = (p.get("제품명") or "")[:20]
+            prog.progress(i / n, text=f"{progress_label}: [{pid}] {pname}  ({i+1}/{n})")
+
+            for acc_label, folder_id in folders.items():
+                if not folder_id:
+                    continue
+                try:
+                    if acc_label not in service_cache:
+                        service_cache[acc_label] = build_service(acc_label)
+                    svc = service_cache[acc_label]
+                    rows = scan_folder_to_파일_rows(svc, folder_id)
+                    cnt = upsert_파일(pid, rows, acc_label)
+                    total_upsert += cnt
+                except Exception as e:
+                    errors.append(f"[제품 {pid}, {acc_label}] {type(e).__name__}: {e}")
+        except Exception as e:
+            errors.append(f"[제품 {pid}] {type(e).__name__}: {e}")
+
+    prog.progress(1.0, text=f"{progress_label} 완료 ({n}/{n})")
+    prog.empty()
+    return total_upsert, errors
+
+
 def _render_table(df_sub: pd.DataFrame, key: str, title: str):
     """1개 완성도 그룹 테이블 렌더. (event, filtered_view) 반환. 빈 결과는 (None, view)."""
     with st.container(border=True):
         st.markdown(f"### {title}  ·  {len(df_sub)}건")
+
+        # 직전 재스캔 결과 메시지 (한 번만 표시 후 소비)
+        _rs_msg = st.session_state.pop(f"_rescan_msg_{key}", None)
+        _rs_errs = st.session_state.pop(f"_rescan_errors_{key}", None)
+        if _rs_msg:
+            st.success(_rs_msg)
+            if _rs_errs:
+                with st.expander(f"⚠️ 에러 {len(_rs_errs)}건"):
+                    for _e in _rs_errs:
+                        st.caption(_e)
 
         ids = df_sub["id"].tolist() if not df_sub.empty else []
         name_map = (
@@ -303,6 +379,29 @@ def _render_table(df_sub: pd.DataFrame, key: str, title: str):
             key=df_key,
             height=420,
         )
+
+        # ── Drive 폴더 일괄 재스캔 (현재 필터된 제품 대상) ──
+        _rs_col1, _rs_col2 = st.columns([5, 2])
+        with _rs_col2:
+            if st.button(
+                f"🔍 {len(view)}개 Drive 재스캔",
+                key=f"btn_rescan_table_{key}",
+                help="현재 필터된 제품들의 매핑된 Drive 폴더를 모두 재스캔해서 새 파일을 DB에 등록합니다. "
+                     "제품 수가 많으면 시간이 좀 걸립니다.",
+                use_container_width=True,
+            ):
+                _ids = view["id"].tolist()
+                _total, _errors = _rescan_products(_ids, progress_label=f"{title} 재스캔")
+                _msg = f"✅ {_total}개 파일 동기화됨 (중복 자동 스킵)"
+                if _errors:
+                    _msg += f"  ·  ⚠️ 에러 {len(_errors)}건"
+                st.session_state[f"_rescan_msg_{key}"] = _msg
+                st.session_state[f"_rescan_errors_{key}"] = _errors
+                try:
+                    st.cache_data.clear()
+                except Exception:
+                    pass
+                st.rerun()
 
         # ─── D안: 일괄 엠군 대상 토글 (이 블록 통째로 삭제 가능) ───
         if "엠군작업대상" in view.columns:

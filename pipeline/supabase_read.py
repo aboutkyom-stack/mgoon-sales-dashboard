@@ -405,6 +405,37 @@ def list_all_images(search: str = "", 계정: str | None = None, limit: int = 50
     return result
 
 
+def list_all_files(
+    계정: str | None = None,
+    파일_유형: str | None = None,
+    limit: int = 500,
+) -> list[dict]:
+    """상품_파일에서 전체 파일 조회 (이미지/동영상/기타 모두). 상품명 JOIN 포함.
+
+    파일_유형: "image" / "video" / None(전체). None이면 모든 유형 반환.
+    """
+    q = (
+        _client()
+        .table("상품_파일")
+        .select("id, 상품_id, 파일명, 파일_유형, 드라이브_파일_id, 드라이브_url, 계정, 상품(id, 제품명)")
+        .not_.is_("드라이브_파일_id", "null")
+        .order("상품_id")
+        .limit(limit)
+    )
+    if 계정:
+        q = q.eq("계정", 계정)
+    if 파일_유형:
+        q = q.eq("파일_유형", 파일_유형)
+    rows = q.execute().data or []
+    result = []
+    for r in rows:
+        flat = dict(r)
+        product = flat.pop("상품", None) or {}
+        flat["제품명"] = product.get("제품명", "")
+        result.append(flat)
+    return result
+
+
 def get_image_counts() -> dict[int, int]:
     """상품별 이미지 수 딕셔너리 반환. {상품_id: count}"""
     try:
@@ -422,6 +453,42 @@ def get_image_counts() -> dict[int, int]:
         return counts
     except Exception:
         return {}
+
+
+def get_file_counts_by_type() -> dict[int, dict[str, int]]:
+    """상품별 파일 유형 카운트. {상품_id: {"image": N, "video": N, "etc": N}}
+
+    "etc"는 image/video 외 모든 파일_유형의 합 (예: doc/pdf/audio/null 등).
+    """
+    try:
+        res = (
+            _client()
+            .table("상품_파일")
+            .select("상품_id, 파일_유형")
+            .execute()
+        )
+        counts: dict[int, dict[str, int]] = {}
+        for row in res.data or []:
+            pid = row["상품_id"]
+            kind = row.get("파일_유형")
+            bucket = "image" if kind == "image" else ("video" if kind == "video" else "etc")
+            d = counts.setdefault(pid, {"image": 0, "video": 0, "etc": 0})
+            d[bucket] += 1
+        return counts
+    except Exception:
+        return {}
+
+
+def format_file_counts(c: dict[str, int]) -> str:
+    """파일 카운트를 '📷9 🎬2 📄1' 형식으로 표시 (0인 항목은 생략)."""
+    parts: list[str] = []
+    if c.get("image", 0) > 0:
+        parts.append(f"📷{c['image']}")
+    if c.get("video", 0) > 0:
+        parts.append(f"🎬{c['video']}")
+    if c.get("etc", 0) > 0:
+        parts.append(f"📄{c['etc']}")
+    return " ".join(parts)
 
 
 def list_계정_values() -> list[str]:

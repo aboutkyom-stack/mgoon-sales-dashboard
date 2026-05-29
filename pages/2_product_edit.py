@@ -62,6 +62,14 @@ from pipeline.models_config import (
 from pipeline.spec_schema import SPEC_FIELDS
 from pipeline.storage import get_storage
 from pipeline.settings import load_판매자특성_활용, load_판매자특성_메모
+from pipeline.image_actions import (
+    bulk_download_zip,
+    image_with_fallback,
+    individual_download_link,
+    original_view_url,
+    refresh_button,
+    video_thumb_with_play_overlay,
+)
 
 # ── 모드 결정 / 임시 레코드 자동 생성 ────────────────────────
 _mode_raw  = st.session_state.get("edit_mode", "new")
@@ -460,9 +468,64 @@ else:
 # 탭 — 이미지 + Vision Pass
 # ─────────────────────────────────────────────────────────
 with tab_이미지:
-    # ── 등록된 이미지 조회 ────────────────────────────────
+    # ── 등록된 이미지 / 동영상 조회 ───────────────────────
     drive_files = get_files(product_id)
     images = [f for f in drive_files if f.get("파일_유형") == "image" and f.get("드라이브_파일_id")]
+    videos = [f for f in drive_files if f.get("파일_유형") == "video" and f.get("드라이브_파일_id")]
+
+    # ── Drive 폴더 재스캔 (매핑된 폴더 있을 때) ────────────
+    _mapped_folders = list_account_folders(row)
+    if _mapped_folders:
+        _rs1, _rs2 = st.columns([5, 2])
+        with _rs2:
+            if st.button(
+                f"🔍 Drive 폴더 재스캔 ({len(_mapped_folders)}개 계정)",
+                key=f"btn_rescan_{product_id}",
+                help="이 제품에 매핑된 Drive 폴더(들)를 다시 스캔해서 새 파일을 DB에 등록합니다. "
+                     "기존에 등록된 파일은 중복 스킵.",
+                use_container_width=True,
+            ):
+                try:
+                    from pipeline.drive_client import build_service, scan_folder_to_파일_rows
+                    _drive_rescan_ok = True
+                except ImportError as _e:
+                    _drive_rescan_ok = False
+                    st.error(f"Drive 클라이언트 로드 실패: {_e}")
+
+                if _drive_rescan_ok:
+                    _before_count = len(get_files(product_id))
+                    _processed = 0
+                    _scan_errors: list[str] = []
+                    with st.spinner(f"Drive 스캔 중… ({len(_mapped_folders)}개 폴더)"):
+                        for _acc_label, _folder_id in _mapped_folders.items():
+                            if not _folder_id:
+                                continue
+                            try:
+                                _svc = build_service(_acc_label)
+                                _rows = scan_folder_to_파일_rows(_svc, _folder_id)
+                                _n = upsert_파일(product_id, _rows, _acc_label)
+                                _processed += _n
+                            except Exception as _se:
+                                _scan_errors.append(
+                                    f"[{_acc_label}] {type(_se).__name__}: {_se}"
+                                )
+                    _after_count = len(get_files(product_id))
+                    _new_count = _after_count - _before_count
+                    if _scan_errors:
+                        for _err in _scan_errors:
+                            st.warning(_err)
+                    st.success(
+                        f"✅ {_processed}개 파일 동기화됨"
+                        f" (신규 등록: {_new_count}개, 중복 스킵 포함)"
+                    )
+                    # 썸네일 cache-bust + DB 캐시 클리어
+                    _tk = f"_thumb_ver_product_edit_{product_id}"
+                    st.session_state[_tk] = st.session_state.get(_tk, 0) + 1
+                    try:
+                        st.cache_data.clear()
+                    except Exception:
+                        pass
+                    st.rerun()
 
     if images:
         # 계정별 카운트 요약 (헤더에 표기)
@@ -473,7 +536,25 @@ with tab_이미지:
             f"{account_badge(acc) if acc else '⚫ 미지정'} {cnt}장"
             for acc, cnt in sorted(_img_acc_counts.items(), key=lambda x: -x[1])
         )
-        st.markdown(f"**등록된 이미지 ({len(images)}장)** — {_acc_summary}")
+        _hdr_col1, _hdr_col2 = st.columns([5, 1])
+        with _hdr_col1:
+            st.markdown(f"**등록된 이미지 ({len(images)}장)** — {_acc_summary}")
+        with _hdr_col2:
+            refresh_button(
+                scope_key=f"product_edit_{product_id}",
+                label="🔄 새로고침",
+                help="DB 다시 조회 + 깨진 썸네일 강제 재요청",
+                use_container_width=True,
+            )
+
+        # 일괄 ZIP 다운로드 버튼 (동영상 포함 토글 — 동영상 있을 때만 노출)
+        bulk_download_zip(
+            files=images,
+            scope_key=f"product_edit_{product_id}",
+            zip_name_prefix=f"product_{product_id}_files",
+            extra_files=videos if videos else None,
+            extra_label="동영상",
+        )
 
         cols = st.columns(min(len(images), 4))
         for i, f in enumerate(images):
@@ -481,21 +562,65 @@ with tab_이미지:
             _f_acc = f.get("계정")
             with cols[i % 4]:
                 try:
-                    st.image(get_thumbnail_url(fid, 400), use_container_width=True)
+                    image_with_fallback(
+                        fid,
+                        size=400,
+                        scope_key=f"product_edit_{product_id}",
+                        alt=f.get("파일명", ""),
+                    )
                     # 계정 배지 + 파일명
                     st.caption(f"{account_badge(_f_acc)} · {f.get('파일명', '')}")
-                    _btn_del, _btn_orig = st.columns([1, 2])
+                    _btn_del, _btn_orig, _btn_dl = st.columns([1, 1, 1])
                     with _btn_del:
                         # Q3: 개별 이미지 삭제 버튼
                         if st.button("🗑️", key=f"del_img_{f['id']}", help="이 이미지 삭제"):
                             delete_파일(f["id"])
                             st.rerun()
                     with _btn_orig:
-                        st.markdown(f"[원본](https://drive.google.com/uc?export=view&id={fid})")
+                        st.markdown(f"[원본]({original_view_url(fid)})")
+                    with _btn_dl:
+                        st.markdown(individual_download_link(fid))
                 except Exception:
                     st.caption(f"로드 실패: {fid}")
     else:
         st.info("등록된 이미지가 없습니다. 아래에서 업로드하세요.")
+
+    # ── 등록된 동영상 ──────────────────────────────────────
+    if videos:
+        st.markdown("")  # spacer
+        _vid_acc_counts: dict[str, int] = {}
+        for _vf in videos:
+            _vid_acc_counts[_vf.get("계정") or ""] = _vid_acc_counts.get(_vf.get("계정") or "", 0) + 1
+        _vid_acc_summary = " · ".join(
+            f"{account_badge(acc) if acc else '⚫ 미지정'} {cnt}개"
+            for acc, cnt in sorted(_vid_acc_counts.items(), key=lambda x: -x[1])
+        )
+        st.markdown(f"**🎬 등록된 동영상 ({len(videos)}개)** — {_vid_acc_summary}")
+
+        v_cols = st.columns(min(len(videos), 4))
+        for i, vf in enumerate(videos):
+            v_fid  = vf["드라이브_파일_id"]
+            _v_acc = vf.get("계정")
+            with v_cols[i % 4]:
+                try:
+                    video_thumb_with_play_overlay(
+                        v_fid,
+                        size=400,
+                        scope_key=f"product_edit_{product_id}",
+                        alt=vf.get("파일명", ""),
+                    )
+                    st.caption(f"{account_badge(_v_acc)} · {vf.get('파일명', '')}")
+                    _vb_del, _vb_orig, _vb_dl = st.columns([1, 1, 1])
+                    with _vb_del:
+                        if st.button("🗑️", key=f"del_vid_{vf['id']}", help="이 동영상 삭제"):
+                            delete_파일(vf["id"])
+                            st.rerun()
+                    with _vb_orig:
+                        st.markdown(f"[원본]({original_view_url(v_fid)})")
+                    with _vb_dl:
+                        st.markdown(individual_download_link(v_fid))
+                except Exception:
+                    st.caption(f"로드 실패: {v_fid}")
 
     st.divider()
 
@@ -1185,7 +1310,12 @@ with tab_이미지:
                         _ic1, _ic2, _ic3 = st.columns([2, 3, 4])
                         with _ic1:
                             try:
-                                st.image(get_thumbnail_url(_fid, 200), use_container_width=True)
+                                image_with_fallback(
+                                    _fid,
+                                    size=200,
+                                    scope_key=f"product_edit_{product_id}",
+                                    alt=_fname,
+                                )
                             except Exception:
                                 pass
                             st.caption(_fname)

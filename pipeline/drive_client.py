@@ -197,27 +197,28 @@ def list_subfolders(service, root_folder_id: str) -> list[dict]:
 def scan_folder_to_파일_rows(service, folder_id: str) -> list[dict]:
     """폴더 스캔 후 상품_파일 upsert용 row 리스트 반환.
 
-    서브폴더(image/, video/, detail/)가 있으면 재귀 스캔.
-    없으면 현재 폴더의 파일만 스캔.
+    분류: 파일의 mime type 기반.
+      - image/* → "image"
+      - video/* → "video"
+      - application/pdf → "detail_page"
+      - 그 외 (txt/md/audio/zip 등) → "기타"
+
+    서브폴더가 있으면 1단계 재귀. 서브폴더명으로 유형을 추론하는 로직은 제거됨 —
+    예전엔 "image" 서브폴더 안의 txt 메모도 image로 잘못 분류되는 버그가 있었음.
+    이제는 항상 파일 자신의 mime이 분류 기준.
     """
     files = list_files_in_folder(service, folder_id)
     subfolders = list_subfolders(service, folder_id)
 
-    # 서브폴더가 있으면 재귀
+    # 서브폴더가 있으면 재귀 (1단계)
     if subfolders:
         for sub in subfolders:
             sub_files = list_files_in_folder(service, sub["id"])
-            for f in sub_files:
-                # 서브폴더명으로 유형 추론 (image/, video/, detail_page/ 등)
-                inferred = _infer_type_from_folder(sub["name"]) or _mime_to_type(f.get("mimeType", ""))
-                f["_유형"] = inferred
             files.extend(sub_files)
 
     rows = []
     for f in files:
-        유형 = f.get("_유형") or _mime_to_type(f.get("mimeType", ""))
-        if not 유형:
-            continue  # 알 수 없는 파일 타입 스킵
+        유형 = _mime_to_type(f.get("mimeType", "")) or "기타"
         rows.append({
             "파일명": f.get("name"),
             "파일_유형": 유형,
