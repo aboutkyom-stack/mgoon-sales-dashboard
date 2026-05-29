@@ -8,6 +8,12 @@
   4. 스펙 탭에서 VP 결과 참고해 필드 채움 → 저장
 
 수정: session_state["edit_mode"] = "edit"  +  session_state["edit_product_id"] = int
+
+⚠️ 변경 감지 매니페스트 동기화 규약
+   스펙 탭의 `st.subheader` 텍스트(기본 정보 / 재고 / 가격 / 치수 / 무게 / 소재 / 색상 /
+   인증 / 검수)를 바꾸거나 새 그룹을 추가하면, `pipeline/snapshot_schema.py`의
+   `SNAPSHOT_GROUPS` 키도 같이 갱신해야 한다. 변경 감지 박제·UI 후보·diff 표시가
+   거기서 단일 소스로 관리된다.
 """
 from __future__ import annotations
 
@@ -30,6 +36,13 @@ from pipeline.account_ui import (
     account_short_name,
 )
 from pipeline.supabase_read import (
+    WORKFLOW_BOX_BASIC,
+    WORKFLOW_BOX_DETAIL,
+    WORKFLOW_BOX_MGOON,
+    WORKFLOW_BOX_NONE,
+    acknowledge_변경,
+    compute_변경_diff,
+    compute_워크플로_단계,
     delete_비전패스_이력,
     delete_파일,
     delete_상품,
@@ -44,6 +57,7 @@ from pipeline.supabase_read import (
     list_account_folders,
     list_비전패스_이력,
     set_account_folder,
+    set_워크플로_토글,
     set_엠군작업대상,
     set_is_test,
     update_상품,
@@ -62,6 +76,11 @@ from pipeline.models_config import (
 from pipeline.spec_schema import SPEC_FIELDS
 from pipeline.storage import get_storage
 from pipeline.settings import load_판매자특성_활용, load_판매자특성_메모
+from pipeline.snapshot_schema import (
+    파일_field_kind,
+    엠군_stage_info,
+    엠군_stage_label,
+)
 from pipeline.image_actions import (
     bulk_download_zip,
     image_with_fallback,
@@ -201,6 +220,83 @@ with _btn_col1:
         st.session_state.pop("edit_mode", None)
         st.switch_page("pages/1_products.py")
 
+# ── 🔄 변경 감지 카드용 분리 표시 헬퍼 ─────────────────────
+# (변경 감지 카드 코드보다 위쪽에 정의 — Python은 호출 시점 정의 필요)
+
+def _render_file_diff_card(old_items: list[dict], new_items: list[dict]) -> None:
+    """파일 필드 변동을 ➕ 추가 / 🗑️ 삭제 / 📝 이름 변경으로 분리 표시.
+
+    each item: {"id": 드라이브_파일_id, "name": 파일명}
+    동일 id에서 name만 다르면 → 이름 변경. id 자체가 추가/삭제되면 → 추가/삭제.
+    """
+    old_map = {it.get("id"): it.get("name") for it in old_items if it.get("id")}
+    new_map = {it.get("id"): it.get("name") for it in new_items if it.get("id")}
+
+    added_ids   = sorted(set(new_map) - set(old_map))
+    removed_ids = sorted(set(old_map) - set(new_map))
+    common      = set(old_map) & set(new_map)
+    renamed     = sorted(
+        [(i, old_map[i], new_map[i]) for i in common if old_map[i] != new_map[i]],
+        key=lambda x: x[0],
+    )
+
+    if added_ids:
+        st.markdown(f"➕ **추가됨 ({len(added_ids)}개)**")
+        for i in added_ids:
+            st.markdown(f"- `{new_map[i] or '(이름 없음)'}`")
+    if removed_ids:
+        st.markdown(f"🗑️ **삭제됨 ({len(removed_ids)}개)**")
+        for i in removed_ids:
+            st.markdown(f"- `{old_map[i] or '(이름 없음)'}`")
+    if renamed:
+        st.markdown(f"📝 **이름 변경 ({len(renamed)}개)**")
+        for _i, _on, _nn in renamed:
+            st.markdown(f"- `{_on}` → **`{_nn}`**")
+    if not (added_ids or removed_ids or renamed):
+        st.caption("(파일 변동 없음 — 비교 정렬 차이 가능성)")
+
+
+def _render_엠군_diff_card(old_items: list[dict], new_items: list[dict]) -> None:
+    """엠군 단계 변동을 ➕ 신규 / 🗑️ 삭제 / ✏️ 내용 변경으로 분리 표시.
+
+    each item: {"run_id":..., "target_id":..., "detail_id":..., "data": [...]}
+    (target_id/detail_id는 FK 타입에 따라 없을 수 있음)
+    """
+    def _entry_key(it: dict) -> tuple:
+        return (it.get("run_id"), it.get("target_id"), it.get("detail_id"))
+
+    def _label(k: tuple) -> str:
+        run_id, target_id, detail_id = k
+        parts = []
+        if run_id    is not None: parts.append(f"run #{run_id}")
+        if target_id is not None: parts.append(f"target #{target_id}")
+        if detail_id is not None: parts.append(f"detail #{detail_id}")
+        return " · ".join(parts) if parts else "(unknown)"
+
+    old_map = {_entry_key(it): it.get("data") for it in old_items}
+    new_map = {_entry_key(it): it.get("data") for it in new_items}
+
+    added    = sorted(set(new_map) - set(old_map))
+    removed  = sorted(set(old_map) - set(new_map))
+    common   = set(old_map) & set(new_map)
+    modified = sorted([k for k in common if old_map[k] != new_map[k]])
+
+    if added:
+        st.markdown(f"➕ **신규 항목 ({len(added)}개)**")
+        for _k in added:
+            st.markdown(f"- {_label(_k)}")
+    if removed:
+        st.markdown(f"🗑️ **삭제된 항목 ({len(removed)}개)**")
+        for _k in removed:
+            st.markdown(f"- {_label(_k)}")
+    if modified:
+        st.markdown(f"✏️ **내용 변경 ({len(modified)}개)**")
+        for _k in modified:
+            st.markdown(f"- {_label(_k)}")
+    if not (added or removed or modified):
+        st.caption("(엠군 단계 변동 없음)")
+
+
 # ── 엠군 작업대상 토글 (임시 레코드 제외, owner/partner 모두 가능) ──
 def _clear_lock_after_self_edit() -> None:
     """본인 토글 후 호출 — 락/충돌 플래그 클리어.
@@ -235,6 +331,139 @@ if not _is_temp and product_id:
             set_is_test(product_id, not _is_test_현재)
             _clear_lock_after_self_edit()
             st.rerun()
+
+    # ── 워크플로 단계 토글 3개 (한 줄 아래 새 columns) ──
+    # 토글 ON 시점에 단계별 핵심 필드를 snapshot으로 박제 → 후속 작업자에게 🔄 변경 알림.
+    # 토글 OFF 시 snapshot도 NULL로 클리어. 순서 강제 없음 (운영해보고 필요하면 추가).
+    _wf_col1, _wf_col2, _wf_col3 = st.columns(3)
+    _wf_specs = [
+        (_wf_col1, "기초입력",   "🟠 기초입력 완료",    "기초입력_완료_at",
+         "동료가 기초자료(카테고리·이미지·시각설명·가격 등) 입력을 끝냈음을 표시합니다. "
+         "ON 시점의 핵심 필드를 박제 → 이후 변경되면 엠군 돌리는 사람에게 🔄 표시."),
+        (_wf_col2, "엠군",       "🔵 엠군 작업 완료",   "엠군_완료_at",
+         "엠군 파이프라인 결과를 동료에게 넘기기 적합한 상태임을 표시합니다. "
+         "ON 시점의 엠군 결과(runs)를 박제 → 이후 변경되면 상세페이지 만드는 사람에게 🔄 표시."),
+        (_wf_col3, "상세페이지", "✅ 상세페이지 완료",  "상세페이지_완료_at",
+         "상세페이지 생성이 끝났음을 표시합니다. "
+         "(현재 후속 작업자 없음 — 향후 채널 단계 작업자 도입 시 활용)"),
+    ]
+    for _col, _stage, _label_base, _at_col, _help_text in _wf_specs:
+        _on = bool(row.get(_at_col))
+        with _col:
+            _label = f"{_label_base} (ON)" if _on else f"⬛ {_label_base.split(' ', 1)[1]} (OFF)"
+            _type = "primary" if _on else "secondary"
+            if st.button(_label, key=f"wf_toggle_{_stage}", type=_type, help=_help_text,
+                         use_container_width=True):
+                set_워크플로_토글(product_id, _stage, not _on)
+                _clear_lock_after_self_edit()
+                st.rerun()
+
+    # ── 💾 상단 저장 placeholder ──
+    # 스펙 탭의 폼 위젯들이 mount된 뒤(=페이지 코드 후반부)에 이 자리에 저장/취소 버튼이 그려진다.
+    # st.empty()는 위치만 예약. 단일 패스 렌더링이라 사용자는 채워진 상태로만 보게 됨.
+    _save_top_placeholder = st.empty()
+
+    # ── 🔄 변경 감지 카드 ──
+    # 박스를 만든 마지막 ON 토글의 snapshot vs 현재 비교.
+    # 박스 ⬛(일반)이면 비교 대상 없음 → 카드 표시 안 함.
+    _box_key = compute_워크플로_단계(row)
+    _BOX_TO_STAGE = {
+        WORKFLOW_BOX_BASIC:  ("기초입력",   "🟠 기초입력 완료",   "엠군 파이프라인 실행"),
+        WORKFLOW_BOX_MGOON:  ("엠군",       "🔵 엠군 작업 완료",  "상세페이지 제작"),
+        WORKFLOW_BOX_DETAIL: ("상세페이지", "✅ 상세페이지 완료", None),
+    }
+    _stage_info = _BOX_TO_STAGE.get(_box_key)
+    if _stage_info:
+        _snap_stage, _stage_label, _next_action = _stage_info
+        try:
+            _diffs = compute_변경_diff(row, _snap_stage)
+        except Exception:
+            _diffs = []
+        if _diffs:
+            with st.container(border=True):
+                _next_caption = (
+                    f"  ·  다음 작업: **{_next_action}**" if _next_action else ""
+                )
+                st.markdown(
+                    f"### 🔄 변경 감지 — {_stage_label} 토글 이후 "
+                    f"**{len(_diffs)}개 필드** 변경됨{_next_caption}"
+                )
+                st.caption(
+                    "토글을 켠 시점에 박제된 값과 현재 값이 다릅니다. "
+                    "본인 작업 결과물에 반영했거나 무시하기로 했다면 [✓ 확인했음]을 눌러 "
+                    "이 시점의 값을 다시 박제하세요."
+                )
+                with st.expander(f"📋 변경 내역 ({len(_diffs)}건)", expanded=True):
+                    for d in _diffs:
+                        _f = d.get("field", "?")
+                        _old = d.get("old")
+                        _new = d.get("new")
+
+                        # 라벨 — 엠군 단계 키는 사람이 읽는 라벨로 변환
+                        _is_엠군 = 엠군_stage_info(_f) is not None
+                        _is_파일 = 파일_field_kind(_f) is not None
+                        _heading = (
+                            f"**🔸 {엠군_stage_label(_f)}**" if _is_엠군
+                            else f"**🔸 {_f}**"
+                        )
+                        st.markdown(_heading)
+
+                        # 파일 필드 — 추가/삭제/이름변경 분리 표시
+                        if _is_파일:
+                            _render_file_diff_card(_old or [], _new or [])
+
+                        # 엠군 단계 필드 — 신규/삭제/변경 항목 분리 표시
+                        elif _is_엠군:
+                            _render_엠군_diff_card(_old or [], _new or [])
+
+                        # 그룹 dict (예: 가격/치수 / 무게/인증) — 변경된 하위 키만 한 줄씩
+                        elif isinstance(_old, dict) or isinstance(_new, dict):
+                            _old_d = _old if isinstance(_old, dict) else {}
+                            _new_d = _new if isinstance(_new, dict) else {}
+                            _keys = list(dict.fromkeys(list(_old_d.keys()) + list(_new_d.keys())))
+                            _sub_lines = []
+                            for _k in _keys:
+                                _ov, _nv = _old_d.get(_k), _new_d.get(_k)
+                                if _ov != _nv:
+                                    _os = "(없음)" if _ov is None else str(_ov)
+                                    _ns = "(없음)" if _nv is None else str(_nv)
+                                    _sub_lines.append(f"- `{_k}` : {_os}  →  **{_ns}**")
+                            if _sub_lines:
+                                st.markdown("\n".join(_sub_lines))
+                            else:
+                                st.caption("(하위 필드 변동 없음 — 키 추가/삭제만)")
+
+                        # 그 외 리스트 (예: 제품특징_bullet, 판매자특성_선택) — 좌우 컬럼
+                        elif isinstance(_old, list) or isinstance(_new, list):
+                            try:
+                                _old_s = json.dumps(_old or [], ensure_ascii=False, indent=2)
+                                _new_s = json.dumps(_new or [], ensure_ascii=False, indent=2)
+                            except Exception:
+                                _old_s, _new_s = str(_old), str(_new)
+                            _c1, _c2 = st.columns(2)
+                            with _c1:
+                                st.caption("이전 (박제 시점)")
+                                st.code(_old_s, language="json")
+                            with _c2:
+                                st.caption("현재")
+                                st.code(_new_s, language="json")
+
+                        # 단일 스칼라 값 — 한 줄
+                        else:
+                            _os = "(없음)" if _old is None else str(_old)
+                            _ns = "(없음)" if _new is None else str(_new)
+                            st.markdown(f"{_os}  →  **{_ns}**")
+                        st.markdown("")  # 항목 사이 여백
+                if st.button(
+                    "✓ 확인했음",
+                    key="wf_ack_btn",
+                    type="primary",
+                    help=f"{_stage_label} 토글의 박제값을 현재 값으로 갱신합니다. "
+                         f"🔄 알림이 사라집니다.",
+                ):
+                    acknowledge_변경(product_id, _snap_stage)
+                    _clear_lock_after_self_edit()
+                    st.rerun()
 
 st.divider()
 
@@ -2284,11 +2513,10 @@ with tab_스펙:
             key="ta_판매자메모",
         )
 
-    st.divider()
-    _t2_l, _t2_r = st.columns([4, 1])
-    if _t2_l.button("💾 저장", type="primary", use_container_width=True, key="btn_save_tab2"):
+    # ── 저장 payload 빌더 — 상단 placeholder + 하단 버튼 둘 다 동일 payload 사용 ──
+    def _build_save_payload() -> dict:
         _ss = st.session_state
-        _save({
+        return {
             "제품명":         제품명.strip(),
             "모델명":         모델명        or None,
             "카테고리":       카테고리      or None,
@@ -2333,7 +2561,25 @@ with tab_스펙:
             "재입고예정":     재입고예정,
             "단종여부":       단종여부,
             "온라인판매가능": 온라인판매가능,
-        })
+        }
+
+    # ── 헤더 placeholder 채우기 (워크플로 토글 줄 바로 아래 영역) ──
+    # _save_top_placeholder는 _is_temp 아닐 때만 정의되어 있음 — 같은 조건으로 보호.
+    if not _is_temp and product_id:
+        with _save_top_placeholder.container():
+            _th_l, _th_r = st.columns([4, 1])
+            if _th_l.button("💾 저장", type="primary", use_container_width=True,
+                            key="btn_save_top",
+                            help="스펙·판매자정보 탭의 모든 입력을 한 번에 저장합니다."):
+                _save(_build_save_payload())
+            if _th_r.button("취소", use_container_width=True, key="btn_cancel_top",
+                            help="편집 중인 값을 버리고 원래 값으로 되돌립니다."):
+                _cancel()
+
+    st.divider()
+    _t2_l, _t2_r = st.columns([4, 1])
+    if _t2_l.button("💾 저장", type="primary", use_container_width=True, key="btn_save_tab2"):
+        _save(_build_save_payload())
     if _t2_r.button("취소", use_container_width=True, key="btn_cancel_tab2"):
         _cancel()
 

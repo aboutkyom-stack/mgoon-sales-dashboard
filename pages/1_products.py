@@ -1,10 +1,11 @@
 """페이지 1 — 상품 조회.
 
-- 완성/진행중/일반/테스트 4개 테이블로 분리 조회. (테스트 = is_test=True)
-- 각 테이블 검색(이름·id selectbox) + 엠군상태 필터.
-- 전체 테이블 공통의 컬럼 표시 설정.
-- 행 선택 → 상세 영역. 다른 테이블에서 선택 시 이전 선택 자동 해제.
-- "이 제품으로 파이프라인 실행" 버튼.
+- 워크플로 단계별 4개 박스 + 테스트 박스로 분리 조회.
+  · ⬛ 일반 / 🟠 기초자료 입력완료 / 🔵 엠군 작업 완료 / ✅ 상세페이지 생성 완료 / 🧪 테스트
+- 박스 분류는 `상품` 테이블의 `*_완료_at` 토글로 결정 (`pipeline.supabase_read.compute_워크플로_단계`).
+- 각 박스마다 🔄 변경 감지 컬럼 + 자동 정렬 (변경된 행 상단).
+- 페이지 상단에 다음 단계 액션 대기 카운트 배너.
+- 행 선택 → 편집 페이지 자동 이동.
 """
 from __future__ import annotations
 
@@ -15,10 +16,15 @@ import pandas as pd
 import streamlit as st
 
 from pipeline.supabase_read import (
+    WORKFLOW_BOX_BASIC,
+    WORKFLOW_BOX_DETAIL,
+    WORKFLOW_BOX_MGOON,
+    WORKFLOW_BOX_NONE,
+    compute_변경_diff,
+    compute_워크플로_단계,
     delete_임시_products,
     format_file_counts,
     get_file_counts_by_type,
-    get_image_counts,
     list_products,
     list_엠군상태_values,
     set_엠군작업대상,
@@ -27,13 +33,42 @@ from pipeline.supabase_read import (
 
 _COL_PREFS_FILE = Path(__file__).parent.parent / "settings_columns.json"
 
-_COMP_DONE = "✅ 완성"
-_COMP_PROG = "🟡 진행중"
-_COMP_TODO = "⬛ 일반"
-_COMP_TEST = "🧪 테스트"
+# 워크플로 박스 라벨 (compute_워크플로_단계 반환 키와 동일 매핑)
+_BOX_TODO   = f"⬛ 일반"
+_BOX_BASIC  = f"🟠 기초자료 입력완료"
+_BOX_MGOON  = f"🔵 엠군 작업 완료"
+_BOX_DETAIL = f"✅ 상세페이지 생성 완료"
+_BOX_TEST   = f"🧪 테스트"
+
+# 박스 → (compute_워크플로_단계 키, 다음 단계 액션명 또는 None)
+_BOX_TABLE: list[tuple[str, str, str | None]] = [
+    (_BOX_TODO,   WORKFLOW_BOX_NONE,   None),
+    (_BOX_BASIC,  WORKFLOW_BOX_BASIC,  "엠군 파이프라인 실행"),
+    (_BOX_MGOON,  WORKFLOW_BOX_MGOON,  "상세페이지 제작"),
+    (_BOX_DETAIL, WORKFLOW_BOX_DETAIL, None),
+]
+# 행 데이터에 부여할 박스 키 컬럼명 (내부 분류용 — 화면 노출 X)
+_STAGE_KEY = "_단계"
+# 단계 → 직전 단계(snapshot 비교 기준). 후속작업자 관점에서 자기 박스의 "이전 단계 snapshot" 변화를 본다.
+#   - 🟠 박스 = 다음 작업 = 엠군 돌리는 사람 → 본인이 봐야 할 변동 = 기초입력 snapshot
+#   - 🔵 박스 = 다음 작업 = 상세페이지 만드는 사람 → 엠군 snapshot 변동
+#   - ✅ 박스 = 현재 후속자 없음 → 상세페이지 snapshot (향후 채널 단계에서 사용)
+#   - ⬛ 박스 = 토글 OFF → 비교 대상 없음
+_BOX_TO_SNAPSHOT_STAGE: dict[str, str | None] = {
+    WORKFLOW_BOX_NONE:   None,
+    WORKFLOW_BOX_BASIC:  "기초입력",
+    WORKFLOW_BOX_MGOON:  "엠군",
+    WORKFLOW_BOX_DETAIL: "상세페이지",
+}
 
 # 화면에 노출하지 않는 컬럼 (DB 원본 또는 표시용으로 대체된 컬럼)
-_HIDDEN_COLS = {"엠군작업대상", "is_test"}
+_HIDDEN_COLS = {
+    "엠군작업대상", "is_test",
+    "기초입력_완료_at", "기초입력_완료_snapshot",
+    "엠군_완료_at", "엠군_완료_snapshot",
+    "상세페이지_완료_at", "상세페이지_완료_snapshot",
+    _STAGE_KEY,
+}
 
 _HELP_엠군상태 = (
     "**엠군상태** — `상품.엠군상태` 컬럼 값입니다.\n\n"
@@ -43,21 +78,16 @@ _HELP_엠군상태 = (
     "제품 편집에서 수동으로도 바꿀 수 있습니다."
 )
 
-_HELP_완성도 = (
-    "**완성도 기준** — 이미지·핵심 필드 입력 여부로 자동 판정합니다.\n\n"
-    f"- {_COMP_DONE} : 이미지 1장 이상 + 카테고리 + 제품특징_bullet 모두 입력\n"
-    f"- {_COMP_PROG} : 이미지는 있으나 카테고리·제품특징_bullet 중 하나 이상 비어 있음\n"
-    f"- {_COMP_TODO} : 이미지 0장 (아직 작업 시작 전)"
+_HELP_워크플로 = (
+    "**워크플로 단계 박스** — 토글로 단계 진행을 명시합니다.\n\n"
+    f"- {_BOX_TODO} : 모든 토글 OFF (작업 시작 전)\n"
+    f"- {_BOX_BASIC} : 기초입력 토글 ON · 엠군 토글 OFF → **다음 작업 = 엠군 파이프라인 실행**\n"
+    f"- {_BOX_MGOON} : 엠군 토글 ON · 상세페이지 토글 OFF → **다음 작업 = 상세페이지 제작**\n"
+    f"- {_BOX_DETAIL} : 상세페이지 토글 ON\n"
+    f"- {_BOX_TEST} : `is_test=True` (운영 자료와 분리)\n\n"
+    "각 토글 ON 시점의 핵심 필드를 박제(snapshot)해서, 이후 값이 바뀌면 "
+    "후속 작업자 화면에 🔄 변경 알림이 표시됩니다."
 )
-
-
-def _completeness(row: dict, image_count: int) -> str:
-    has_image = image_count > 0
-    if not has_image:
-        return _COMP_TODO
-    if bool(row.get("카테고리")) and bool(row.get("제품특징_bullet")):
-        return _COMP_DONE
-    return _COMP_PROG
 
 
 def _load_col_prefs() -> list[str] | None:
@@ -74,6 +104,29 @@ def _save_col_prefs(cols: list[str]) -> None:
         if _COL_PREFS_FILE.exists():
             existing = json.loads(_COL_PREFS_FILE.read_text(encoding="utf-8"))
         existing["products_visible"] = cols
+        _COL_PREFS_FILE.write_text(
+            json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except Exception:
+        pass
+
+
+def _load_box_order_reversed() -> bool:
+    # 기본값 True = 역배열 (✅ 상세 → 🔵 엠군 → 🟠 기초 → ⬛ 일반).
+    # 후행 단계(완료된 작업)가 위로 가는 게 운영 직관에 더 자연스럽다는 사용자 결정.
+    try:
+        data = json.loads(_COL_PREFS_FILE.read_text(encoding="utf-8"))
+        return bool(data.get("products_box_order_reversed", True))
+    except Exception:
+        return True
+
+
+def _save_box_order_reversed(val: bool) -> None:
+    try:
+        existing: dict = {}
+        if _COL_PREFS_FILE.exists():
+            existing = json.loads(_COL_PREFS_FILE.read_text(encoding="utf-8"))
+        existing["products_box_order_reversed"] = bool(val)
         _COL_PREFS_FILE.write_text(
             json.dumps(existing, ensure_ascii=False, indent=2), encoding="utf-8"
         )
@@ -111,21 +164,48 @@ if not rows:
     st.warning("등록된 제품이 없습니다.")
     st.stop()
 
-image_counts = get_image_counts()
 file_counts = get_file_counts_by_type()
-for r in rows:
-    r["_완성도"] = _completeness(r, image_counts.get(r["id"], 0))
 
-n_done = sum(1 for r in rows if r["_완성도"] == _COMP_DONE and not r.get("is_test"))
-n_prog = sum(1 for r in rows if r["_완성도"] == _COMP_PROG and not r.get("is_test"))
-n_todo = sum(1 for r in rows if r["_완성도"] == _COMP_TODO and not r.get("is_test"))
-n_test = sum(1 for r in rows if r.get("is_test"))
+# 워크플로 박스 분류 + 행별 🔄 변경 감지
+for r in rows:
+    box_key = compute_워크플로_단계(r)
+    r[_STAGE_KEY] = box_key
+    snap_stage = _BOX_TO_SNAPSHOT_STAGE.get(box_key)
+    if snap_stage and not r.get("is_test"):
+        try:
+            r["_변경_diff"] = compute_변경_diff(r, snap_stage)
+        except Exception:
+            r["_변경_diff"] = []
+    else:
+        r["_변경_diff"] = []
+    r["_변경_여부"] = bool(r["_변경_diff"])
+
+# 박스별 카운트 (테스트는 별도)
+def _count_box(box_key: str) -> int:
+    return sum(1 for r in rows if r[_STAGE_KEY] == box_key and not r.get("is_test"))
+
+n_todo   = _count_box(WORKFLOW_BOX_NONE)
+n_basic  = _count_box(WORKFLOW_BOX_BASIC)
+n_mgoon  = _count_box(WORKFLOW_BOX_MGOON)
+n_detail = _count_box(WORKFLOW_BOX_DETAIL)
+n_test   = sum(1 for r in rows if r.get("is_test"))
 
 st.write(
     f"총 **{len(rows)}**개  ·  "
-    f"{_COMP_DONE} **{n_done}** · {_COMP_PROG} **{n_prog}** · {_COMP_TODO} **{n_todo}** · "
-    f"{_COMP_TEST} **{n_test}**"
+    f"{_BOX_TODO} **{n_todo}** · {_BOX_BASIC} **{n_basic}** · "
+    f"{_BOX_MGOON} **{n_mgoon}** · {_BOX_DETAIL} **{n_detail}** · "
+    f"{_BOX_TEST} **{n_test}**"
 )
+
+# ── 🔔 다음 단계 액션 대기 배너 ──
+# 인칭 표현 없이 단계 액션명으로 표현.
+_pending_msgs: list[str] = []
+if n_basic > 0:
+    _pending_msgs.append(f"엠군 파이프라인 실행 대기: **{n_basic}**건")
+if n_mgoon > 0:
+    _pending_msgs.append(f"상세페이지 제작 대기: **{n_mgoon}**건")
+if _pending_msgs:
+    st.info("🔔 " + "  ·  ".join(_pending_msgs))
 
 # ── DataFrame 빌드 ────────────────────────────────────────
 df_all = pd.DataFrame(rows)
@@ -136,7 +216,8 @@ df_all.insert(
         lambda x: format_file_counts(file_counts.get(x, {"image": 0, "video": 0, "etc": 0}))
     ),
 )
-df_all.insert(2, "완성도", df_all["_완성도"])
+# 🔄 변경 감지 컬럼 — diff가 있으면 🔄 표시, 없으면 빈 칸
+df_all.insert(2, "🔄 변동", df_all["_변경_여부"].apply(lambda x: "🔄" if x else ""))
 if "엠군작업대상" in df_all.columns:
     df_all.insert(3, "🎯엠군 대상", df_all["엠군작업대상"].apply(
         lambda x: "✅" if x else "⬛"
@@ -199,23 +280,53 @@ visible_cols = [c for c in all_cols if st.session_state.get(f"col_check_{c}", Tr
 if not visible_cols:
     visible_cols = all_cols
 
-# 완성도 기준 안내 (popover)
-with st.popover("❓ 완성도 기준 보기"):
-    st.markdown(_HELP_완성도)
+# ── 워크플로 박스 안내 + 박스 순서 토글 ──
+# 박스 순서는 settings_columns.json에 영속 저장 (한 번 정하면 다음 진입에도 유지).
+# 🧪 테스트는 항상 하단 (정/역배열 영향 X).
+if "_box_order_reversed" not in st.session_state:
+    st.session_state["_box_order_reversed"] = _load_box_order_reversed()
+_box_reversed = bool(st.session_state["_box_order_reversed"])
+_order_caption = "상세 → 일반" if _box_reversed else "일반 → 상세"
+
+_help_col, _order_col, _spacer_col = st.columns([2, 3, 5])
+with _help_col:
+    with st.popover("❓ 워크플로 박스 안내"):
+        st.markdown(_HELP_워크플로)
+with _order_col:
+    if st.button(
+        f"🔁 박스 순서 뒤집기 (현재: {_order_caption})",
+        key="btn_box_order_toggle",
+        help="박스 표시 순서를 정배열↔역배열로 토글합니다. 🧪 테스트 박스는 항상 하단 유지.",
+        use_container_width=True,
+    ):
+        new_val = not _box_reversed
+        st.session_state["_box_order_reversed"] = new_val
+        _save_box_order_reversed(new_val)
+        st.rerun()
 
 # ── 테이블별 데이터 분리 ──
-# 테스트 레코드는 완성/진행중/일반에서 제외하고 테스트 박스에만 표시
+# 테스트 레코드는 워크플로 박스에서 제외하고 테스트 박스에만 표시
 if "is_test" in df_all.columns:
     _is_test = df_all["is_test"] == True
 else:
     _is_test = pd.Series([False] * len(df_all), index=df_all.index)
 
-df_done = df_all[~_is_test & (df_all["완성도"] == _COMP_DONE)].reset_index(drop=True)
-df_prog = df_all[~_is_test & (df_all["완성도"] == _COMP_PROG)].reset_index(drop=True)
-df_todo = df_all[~_is_test & (df_all["완성도"] == _COMP_TODO)].reset_index(drop=True)
-df_test = df_all[_is_test].reset_index(drop=True)
 
-_TABLE_KEYS = ("done", "prog", "todo", "test")
+def _df_for_box(box_key: str) -> pd.DataFrame:
+    """박스 키로 필터한 DataFrame. 변경된 행 자동 상단 정렬."""
+    sub = df_all[~_is_test & (df_all[_STAGE_KEY] == box_key)].copy()
+    if "_변경_여부" in sub.columns:
+        sub = sub.sort_values(by="_변경_여부", ascending=False, kind="stable")
+    return sub.reset_index(drop=True)
+
+
+df_todo   = _df_for_box(WORKFLOW_BOX_NONE)
+df_basic  = _df_for_box(WORKFLOW_BOX_BASIC)
+df_mgoon  = _df_for_box(WORKFLOW_BOX_MGOON)
+df_detail = _df_for_box(WORKFLOW_BOX_DETAIL)
+df_test   = df_all[_is_test].reset_index(drop=True)
+
+_TABLE_KEYS = ("todo", "basic", "mgoon", "detail", "test")
 
 # ── 행 선택 동기화용 세션 상태 ──
 if "_prod_selections" not in st.session_state:
@@ -303,9 +414,17 @@ def _rescan_products(product_ids: list[int], progress_label: str = "재스캔") 
 
 
 def _render_table(df_sub: pd.DataFrame, key: str, title: str):
-    """1개 완성도 그룹 테이블 렌더. (event, filtered_view) 반환. 빈 결과는 (None, view)."""
+    """1개 박스 테이블 렌더. (event, filtered_view) 반환. 빈 결과는 (None, view)."""
+    n_changed = (
+        int(df_sub["_변경_여부"].sum())
+        if "_변경_여부" in df_sub.columns and not df_sub.empty
+        else 0
+    )
+    header = f"### {title}  ·  {len(df_sub)}건"
+    if n_changed > 0:
+        header += f"  ⚠️ **{n_changed}건 변동 있음**"
     with st.container(border=True):
-        st.markdown(f"### {title}  ·  {len(df_sub)}건")
+        st.markdown(header)
 
         # 직전 재스캔 결과 메시지 (한 번만 표시 후 소비)
         _rs_msg = st.session_state.pop(f"_rescan_msg_{key}", None)
@@ -492,28 +611,34 @@ def _render_table(df_sub: pd.DataFrame, key: str, title: str):
         return event, view
 
 
-event_done, view_done = _render_table(df_done, "done", _COMP_DONE)
-event_prog, view_prog = _render_table(df_prog, "prog", _COMP_PROG)
-event_todo, view_todo = _render_table(df_todo, "todo", _COMP_TODO)
-event_test, view_test = _render_table(df_test, "test", _COMP_TEST)
+# ── 박스 렌더링 (정/역배열 토글) ──
+# 🧪 테스트는 항상 마지막 — 정/역배열 영향 X.
+_workflow_box_specs = [
+    ("todo",   df_todo,   _BOX_TODO),
+    ("basic",  df_basic,  _BOX_BASIC),
+    ("mgoon",  df_mgoon,  _BOX_MGOON),
+    ("detail", df_detail, _BOX_DETAIL),
+]
+if st.session_state.get("_box_order_reversed"):
+    _workflow_box_specs = list(reversed(_workflow_box_specs))
+
+_events: dict = {}
+view_map: dict = {}
+for _k, _df_sub, _title in _workflow_box_specs:
+    _ev, _vw = _render_table(_df_sub, _k, _title)
+    _events[_k] = _ev
+    view_map[_k] = _vw
+
+# 테스트는 항상 하단
+_ev_test, _vw_test = _render_table(df_test, "test", _BOX_TEST)
+_events["test"] = _ev_test
+view_map["test"] = _vw_test
 
 # ── 행 클릭 = 자동 편집 페이지 전환 ──
 prev_sel = dict(st.session_state._prod_selections)
-_events = {
-    "done": event_done,
-    "prog": event_prog,
-    "todo": event_todo,
-    "test": event_test,
-}
 curr_sel = {
     k: (list(ev.selection.rows) if ev is not None else [])
     for k, ev in _events.items()
-}
-view_map = {
-    "done": view_done,
-    "prog": view_prog,
-    "todo": view_todo,
-    "test": view_test,
 }
 
 # 새로 selection이 생긴 (이전과 다르고 비어있지 않은) 테이블 찾기

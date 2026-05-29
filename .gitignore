@@ -34,3 +34,8 @@ db/*.log
 # 일반 임시·로그 파일
 *.tmp
 *.log
+
+# 채팅방·세션별 작업 산출물 / 개인 메모 (push 대상 아님)
+_decisions/
+agents/01_deficit_target/TODO_pending.md
+로컬 스트림릿 두개 여는 방법.txt

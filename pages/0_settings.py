@@ -9,8 +9,11 @@ import streamlit as st
 
 from pipeline.settings import (
     DEFAULT_EXCLUDED_FIELDS,
+    DEFAULT_SNAPSHOT_FIELDS,
     MODELS_ORDERED,
+    SNAPSHOT_FIELD_CANDIDATES,
     STAGES,
+    WORKFLOW_STAGES,
     load,
     save,
     load_판매자특성_활용,
@@ -139,6 +142,57 @@ for stage in STAGES:
         key=f"excl_{stage}",
     )
     new_values[excl_key] = excluded
+
+st.divider()
+st.subheader("📸 변경 감지 필드 관리")
+st.caption(
+    "워크플로 단계 토글(기초입력/엠군/상세페이지) ON 시점에 박제할 **핵심 필드**를 선택합니다. "
+    "후속 작업자가 페이지 진입 시 박제된 값 vs 현재 값을 비교해 🔄 변동 알림을 표시합니다.\n\n"
+    "- 비교 로직은 강건: 체크 해제한 필드는 비교 대상에서 제외되므로 false positive 없음.\n"
+    "- 그룹 필드 (예: `가격`, `치수 / 무게`)는 내부 컬럼들을 묶어 한 번에 비교.\n"
+    "- `파일_image` / `파일_video` / `파일_etc`는 각각 해당 파일_유형의 추가·삭제·이름 변경을 모두 감지.\n"
+    "- `엠군_*` 단계는 엠군 파이프라인 결과 (실행/타겟/단계별 출력) 변동을 감지."
+)
+st.caption(
+    "📂 후보 목록의 단일 소스는 `pipeline/snapshot_schema.py`입니다. "
+    "수정 페이지의 그룹명이나 엠군 단계가 바뀌면 그 모듈을 같이 갱신하세요."
+)
+
+# 엠군 단계는 키 자체가 길어(예: `엠군_02_포지셔닝`) 사용자에게는 사람이 읽는 라벨로 보이게 한다.
+from pipeline.snapshot_schema import 엠군_stage_label
+
+_WS_LABELS: dict[str, str] = {
+    "기초입력":   "🟠 기초입력 단계 (후속자=엠군 돌리는 사람)",
+    "엠군":       "🔵 엠군 단계 (후속자=상세페이지 만드는 동료)",
+    "상세페이지": "✅ 상세페이지 단계 (현재 후속자 없음 — 향후 채널 단계용)",
+}
+
+for ws in WORKFLOW_STAGES:
+    snap_key = f"snapshot_fields_{ws}"
+    current_snap: list[str] = cfg.get(snap_key, list(DEFAULT_SNAPSHOT_FIELDS.get(ws, [])))
+    candidates = SNAPSHOT_FIELD_CANDIDATES.get(ws, [])
+    # 후보에 없는 저장값은 제거 (구버전 호환)
+    current_snap = [f for f in current_snap if f in candidates]
+    if not candidates:
+        # 상세페이지는 현재 후보 없음 → 안내만 표시하고 빈 리스트 저장
+        st.caption(f"{_WS_LABELS[ws]} — 현재 후보 필드 없음 (빈 `{{}}`로 박제)")
+        new_values[snap_key] = []
+        continue
+
+    # 엠군 단계는 키 → 라벨 표시. 기초입력 단계는 키 그대로(그룹명이 사람이 읽는 형태).
+    if ws == "엠군":
+        _format_func = 엠군_stage_label
+    else:
+        _format_func = lambda x: x  # noqa: E731
+
+    selected = st.multiselect(
+        _WS_LABELS[ws],
+        options=candidates,
+        default=current_snap,
+        format_func=_format_func,
+        key=f"snap_{ws}",
+    )
+    new_values[snap_key] = selected
 
 st.divider()
 st.subheader("🏪 판매자 특성 (파이프라인 활용형)")

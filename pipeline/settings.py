@@ -42,6 +42,27 @@ DEFAULT_EXCLUDED_FIELDS: list[str] = ["재고", "판매자메모", "검수완료
 DEFAULT_판매자특성_활용: list[str] = []
 DEFAULT_판매자특성_메모: list[str] = []
 
+# 워크플로 토글 단계 키 (상품 컬럼 prefix와 일치: 기초입력_완료_at 등)
+WORKFLOW_STAGES: tuple[str, ...] = ("기초입력", "엠군", "상세페이지")
+
+# snapshot 박제 후보/기본값은 `pipeline.snapshot_schema`를 단일 소스로 사용.
+# 그룹/필드/엠군 단계 추가는 그 모듈에서만 하면 여기와 설정 페이지까지 자동 반영.
+from . import snapshot_schema as _snap_schema
+
+# 설정 페이지(0_settings.py)에서 사용자가 켜고 끌 수 있는 후보 필드 목록.
+# 단일 소스(snapshot_schema)에서 동적으로 생성 — 매니페스트 갱신 시 즉시 반영.
+SNAPSHOT_FIELD_CANDIDATES: dict[str, list[str]] = {
+    "기초입력":   _snap_schema.기초입력_candidates(),
+    "엠군":       _snap_schema.엠군_candidates(),
+    "상세페이지": _snap_schema.상세페이지_candidates(),
+}
+
+# 기본값 — 모든 후보를 기본 ON. 사용자가 필요 시 0_settings에서 OFF.
+DEFAULT_SNAPSHOT_FIELDS: dict[str, list[str]] = {
+    ws: list(SNAPSHOT_FIELD_CANDIDATES.get(ws, []))
+    for ws in WORKFLOW_STAGES
+}
+
 
 def _build_defaults() -> dict:
     out: dict = {
@@ -54,6 +75,8 @@ def _build_defaults() -> dict:
         out[f"compare_enabled_{s}"] = True
         out[f"lint_enabled_{s}"] = False  # 외부 린터(교차 검수) — 비용 발생, 기본 off
         out[f"excluded_fields_{s}"] = list(DEFAULT_EXCLUDED_FIELDS)
+    for ws in WORKFLOW_STAGES:
+        out[f"snapshot_fields_{ws}"] = list(DEFAULT_SNAPSHOT_FIELDS[ws])
     return out
 
 
@@ -197,3 +220,13 @@ def excluded_fields_for_stage(stage: str, cfg: dict | None = None) -> list[str]:
     """단계별 LLM 프롬프트 제외 필드 목록."""
     cfg = cfg or load()
     return list(cfg.get(f"excluded_fields_{stage}", DEFAULT_EXCLUDED_FIELDS))
+
+
+def snapshot_fields_for_stage(stage: str, cfg: dict | None = None) -> list[str]:
+    """워크플로 단계(기초입력/엠군/상세페이지)의 snapshot 박제 필드 목록.
+
+    토글 ON 시점에 박제하고, 페이지 로드 시 현재 값과 비교해 후속 작업자에게
+    🔄 변경 알림을 노출한다. 사용자는 `pages/0_settings.py`에서 단계별로 켜고 끌 수 있다.
+    """
+    cfg = cfg or load()
+    return list(cfg.get(f"snapshot_fields_{stage}", DEFAULT_SNAPSHOT_FIELDS.get(stage, [])))
