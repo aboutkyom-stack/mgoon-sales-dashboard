@@ -39,3 +39,6 @@ db/*.log
 _decisions/
 agents/01_deficit_target/TODO_pending.md
 로컬 스트림릿 두개 여는 방법.txt
+
+# 전역 앱 설정 — Supabase app_settings가 진실의 원천 (로컬은 폴백 캐시)
+settings.json

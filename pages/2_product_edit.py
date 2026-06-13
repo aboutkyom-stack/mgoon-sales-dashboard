@@ -1196,8 +1196,8 @@ with tab_이미지:
                     "시각설명 **1개** 생성. 빠르고 통합적인 결과가 필요할 때 사용하세요."
                 )
 
-                # ── 엔진 선택 영속화: settings.json의 단계 00 키와 양방향 바인딩 ──
-                # 첫 진입 시 settings.json → session_state 초기화. 이후 변경은 on_change로 settings에 저장.
+                # ── 엔진 선택 영속화: app_settings의 단계 00 키와 양방향 바인딩 ──
+                # 첫 진입 시 설정 → session_state 초기화. 이후 변경은 on_change로 settings에 저장(DB 동기화).
                 from pipeline.settings import load as _vp_settings_load, save as _vp_settings_save
 
                 _cfg_init = _vp_settings_load()
@@ -1219,7 +1219,11 @@ with tab_이미지:
                     _cfg["primary_model_00"]   = st.session_state.get("vp_main_model", _ALL_VP_MODELS[0])
                     _cfg["compare_model_00"]   = st.session_state.get("vp_sub_model", _ALL_VP_MODELS[0])
                     _cfg["compare_enabled_00"] = bool(st.session_state.get("vp_sub_on", True))
-                    _vp_settings_save(_cfg)
+                    try:
+                        _vp_settings_save(_cfg)
+                    except Exception:
+                        # DB 동기화 실패 — 로컬엔 이미 저장됨. 엔진 선택은 부수 기능이라 조용히 알림.
+                        st.toast("⚠️ 엔진 설정 DB 동기화 실패 (로컬 저장됨)", icon="⚠️")
 
                 _ec1, _ec2 = st.columns(2)
                 with _ec1:

@@ -43,8 +43,8 @@ STAGE_LABELS: dict[str, str] = {
 
 
 st.title("⚙️ 모델 설정")
-st.caption("단계별 주 사용 모델 + 비교 모델(on/off)을 설정합니다. 저장하면 settings.json에 기록됩니다.")
-st.caption("🗄️ DB — settings.json (로컬 파일)")
+st.caption("단계별 주 사용 모델 + 비교 모델(on/off)을 설정합니다. 저장하면 모든 작업자(로컬·클라우드)에게 공유됩니다.")
+st.caption("🗄️ DB — app_settings (Supabase) · 로컬·클라우드 공유")
 
 cfg = load()
 
@@ -245,8 +245,14 @@ new_values["판매자특성_메모"] = [
 
 st.divider()
 if st.button("💾 저장", type="primary", use_container_width=True):
-    save(new_values)
-    st.success("저장 완료!")
+    try:
+        save(new_values)
+        st.success("저장 완료! — DB에 동기화되어 로컬·클라우드 양쪽에 반영됩니다.")
+    except Exception as e:
+        st.error(
+            "⚠️ DB 저장 실패 — 로컬에는 저장됐지만 DB 동기화에 실패했습니다. "
+            f"인터넷/Supabase 연결을 확인하고 다시 저장하세요.\n\n`{e}`"
+        )
 
 st.divider()
 st.subheader("📝 입력 프롬프트 편집 (instruction.md)")

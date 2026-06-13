@@ -12,10 +12,13 @@ False이면 compare는 None으로 처리.
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 from .models_config import family_of
 
+# 전역 설정의 진실의 원천은 Supabase `app_settings` 테이블(단일 행).
+# 이 로컬 파일은 오프라인/DB 장애 시의 폴백 캐시 겸 백업으로만 유지된다.
 SETTINGS_PATH = Path(__file__).parent.parent / "settings.json"
 
 # UI 노출 순서. 첫 항목이 기본값.
@@ -82,21 +85,68 @@ def _build_defaults() -> dict:
 
 DEFAULTS: dict = _build_defaults()
 
+# ── 전역 설정 영속화 (Supabase app_settings ↔ 로컬 파일 폴백) ──
+# Streamlit은 인터랙션마다 스크립트를 전체 재실행하므로 load()가 한 번의
+# 렌더에서 여러 번 호출된다. 짧은 메모리 캐시로 중복 DB 조회를 막는다.
+_CACHE: dict = {"data": None, "ts": 0.0}
+_CACHE_TTL = 3.0  # 초 — 동료 변경은 최대 이 시간 후 반영(허용 범위)
 
-def load() -> dict:
-    """settings.json 로드 + DEFAULTS 병합. 구 키(claude_model_*/gemini_model_*)는 무시."""
+
+def _merge_defaults(saved: dict) -> dict:
+    """구 키 마이그레이션 + DEFAULTS 병합. 신 키만 채택."""
+    if "판매자특성" in saved and "판매자특성_활용" not in saved:
+        saved = dict(saved)
+        saved["판매자특성_활용"] = saved.pop("판매자특성")
+    saved_clean = {k: v for k, v in saved.items() if k in DEFAULTS}
+    return {**DEFAULTS, **saved_clean}
+
+
+def _read_file() -> dict | None:
+    """로컬 settings.json 읽기 (DB 폴백). 없거나 깨졌으면 None."""
     if SETTINGS_PATH.exists():
         try:
-            saved = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
-            # 마이그레이션: 구 '판매자특성' → '판매자특성_활용'
-            if "판매자특성" in saved and "판매자특성_활용" not in saved:
-                saved["판매자특성_활용"] = saved.pop("판매자특성")
-            # 신 키만 채택 (구 키는 사일런트 폐기)
-            saved_clean = {k: v for k, v in saved.items() if k in DEFAULTS}
-            return {**DEFAULTS, **saved_clean}
+            return json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
         except Exception:
-            pass
-    return dict(DEFAULTS)
+            return None
+    return None
+
+
+def _write_file(settings: dict) -> None:
+    """로컬 settings.json 미러 (오프라인 백업). 실패는 무시."""
+    try:
+        SETTINGS_PATH.write_text(
+            json.dumps(settings, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+    except Exception:
+        pass
+
+
+def load(force: bool = False) -> dict:
+    """전역 설정 로드 + DEFAULTS 병합.
+
+    우선순위: Supabase app_settings → 로컬 settings.json(폴백) → DEFAULTS.
+    DB가 진실의 원천이며, 짧은 메모리 캐시(_CACHE_TTL)로 중복 조회를 막는다.
+    force=True면 캐시를 무시하고 즉시 재조회.
+    """
+    now = time.time()
+    if not force and _CACHE["data"] is not None and (now - _CACHE["ts"]) < _CACHE_TTL:
+        return dict(_CACHE["data"])
+
+    saved: dict | None = None
+    try:
+        from .supabase_read import get_app_settings
+        saved = get_app_settings()  # 조회 실패 시 None
+    except Exception:
+        saved = None
+    if saved is None:
+        saved = _read_file()  # DB 실패 → 로컬 폴백
+    if saved is None:
+        saved = {}
+
+    merged = _merge_defaults(saved)
+    _CACHE["data"] = merged
+    _CACHE["ts"] = now
+    return dict(merged)
 
 
 def _coerce_list(val) -> list[str]:
@@ -123,9 +173,19 @@ def load_판매자특성() -> list[str]:
 
 
 def save(settings: dict) -> None:
-    SETTINGS_PATH.write_text(
-        json.dumps(settings, indent=2, ensure_ascii=False), encoding="utf-8"
-    )
+    """전역 설정 저장 — Supabase app_settings에 통째 upsert + 로컬 미러.
+
+    last-write-wins: 저장 시점의 전체 설정으로 DB 단일 행을 교체한다.
+    로컬 미러·캐시는 먼저 확정하고, DB upsert는 마지막에 시도한다.
+    DB 저장이 실패하면 예외를 전파해 호출부가 사용자에게 알릴 수 있게 한다
+    (로컬에는 이미 저장된 상태).
+    """
+    _write_file(settings)
+    _CACHE["data"] = _merge_defaults(settings)
+    _CACHE["ts"] = time.time()
+
+    from .supabase_read import upsert_app_settings
+    upsert_app_settings(settings)  # 실패 시 예외 전파
 
 
 def models_for_stage(stage: str, cfg: dict | None = None) -> tuple[str | None, str | None]:

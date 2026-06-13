@@ -915,6 +915,56 @@ def upsert_drive_token(account_name: str, token_data: dict) -> dict:
     return res.data[0] if res.data else {}
 
 
+# ── app_settings (전역 앱 설정 DB 동기화) ─────────────────
+# 기존 settings.json을 단일 행(id=1)에 JSONB로 보관.
+# 로컬(owner)·Cloud(partner)가 같은 설정을 공유. 통째 교체(last-write-wins).
+
+_APP_SETTINGS_ID = 1
+
+
+def get_app_settings() -> dict | None:
+    """app_settings 단일 행(id=1)의 data(JSONB) 반환.
+
+    행이 없으면 빈 dict, 조회 실패(연결 불가 등)면 None.
+    None은 호출부에서 '로컬 파일 폴백'의 신호로 사용된다.
+    """
+    try:
+        res = (
+            _client()
+            .table("app_settings")
+            .select("data")
+            .eq("id", _APP_SETTINGS_ID)
+            .limit(1)
+            .execute()
+        )
+        if res.data:
+            return res.data[0].get("data") or {}
+        return {}
+    except Exception:
+        return None
+
+
+def upsert_app_settings(data: dict) -> dict:
+    """app_settings 단일 행(id=1)에 전체 설정을 통째로 upsert.
+
+    실패 시 예외를 그대로 전파한다 (호출부가 사용자에게 알릴 수 있도록).
+    """
+    from datetime import datetime, timezone
+
+    payload = {
+        "id": _APP_SETTINGS_ID,
+        "data": data,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    res = (
+        _client()
+        .table("app_settings")
+        .upsert(payload, on_conflict="id")
+        .execute()
+    )
+    return res.data[0] if res.data else {}
+
+
 # ── 편집_세션 (동시편집 보호 — 사회적 조정) ────────────────
 
 def upsert_편집_세션(상품_id: int, 사용자명: str) -> None:
