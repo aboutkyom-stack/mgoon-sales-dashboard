@@ -544,6 +544,116 @@ def _find_selected_target_dict(selected_db_id: int) -> dict | None:
     return None
 
 
+def _load_interactive_run(run_id: int) -> dict | None:
+    """적재(대화형) run이면 읽기 전용 표시용 데이터 묶음을 반환. 아니면 None.
+
+    엠군_실행.모드 == 'interactive' (ingest_to_supabase.py가 적재한 run)만 해당한다.
+    이 모드의 단계 결과는 모두 모델='interactive'로 저장돼, claude/gemini 2열 전제인
+    `_restore_from_run`/단계 렌더가 전부 걸러낸다 → 화면에 아무것도 안 보임.
+    그래서 적재 run은 이 함수로 직접 읽어 단일 열 읽기 전용 뷰로 표시한다.
+    (owner/partner 무관 — 적재 run 자체의 표시 경로 문제)
+    """
+    run = storage.get_run(run_id)
+    if not run or run.get("모드") != "interactive":
+        return None
+
+    targets = storage.get_targets(run_id)
+    selected = next((t for t in targets if t.get("선택됨")), None)
+
+    def _first_raw(rows: list[dict]) -> str:
+        for r in (rows or []):
+            if r.get("원본_출력"):
+                return r["원본_출력"]
+        return ""
+
+    steps: dict[str, str] = {}
+    if selected:
+        tid = selected["id"]
+        # 01 원본 전체(타겟 행의 원본_출력 = 01_deficit_target.md 본문)
+        steps["01"] = selected.get("원본_출력") or ""
+        steps["02"] = _first_raw(storage.get_positioning(tid))
+        steps["03"] = _first_raw(storage.get_네이밍(tid))
+        detail_rows = storage.get_상세페이지(tid)
+        detail_row = next(
+            (r for r in detail_rows if r.get("원본_출력")),
+            detail_rows[0] if detail_rows else None,
+        )
+        steps["04_a"] = (detail_row or {}).get("원본_출력") or ""
+        if detail_row:
+            steps["04_b"] = _first_raw(storage.get_상세페이지_검수(detail_row["id"]))
+        steps["04_1"] = _first_raw(storage.get_이미지디렉션(tid))
+        steps["05"] = _first_raw(storage.get_채널(tid))
+
+    return {"run": run, "targets": targets, "selected": selected, "steps": steps}
+
+
+def _render_interactive_run(data: dict) -> None:
+    """적재(대화형) run을 읽기 전용 단일 열로 표시 (자동 실행 버튼 없음)."""
+    run = data["run"]
+    targets = data["targets"]
+    selected = data["selected"]
+    steps = data["steps"]
+
+    st.info(
+        "📂 **대화형(엠군 수동) 적재 결과 — 읽기 전용**\n\n"
+        "이 실행은 대화형으로 작업해 적재한 결과입니다. 자동 파이프라인(Claude/Gemini)과 "
+        "저장 형식이 달라 아래에 단일 열로 표시합니다. (자동 실행 버튼은 표시되지 않습니다)"
+    )
+
+    # run 메타 (시도 / 가설)
+    with st.container(border=True):
+        if run.get("시도_라벨"):
+            st.markdown(f"**시도**: {run['시도_라벨']}")
+        if run.get("타겟_가설"):
+            st.caption(f"🎯 타겟 가설: {run['타겟_가설']}")
+        if run.get("결핍_가설"):
+            st.caption(f"💢 결핍 가설: {run['결핍_가설']}")
+        if run.get("대화형_폴더명"):
+            st.caption(f"📁 원본 폴더: `{run['대화형_폴더명']}`")
+
+    if not targets:
+        st.warning("이 실행에는 타겟이 없습니다 (00·상품 단계만 적재됨).")
+        return
+
+    # 타겟 후보 — 선택 타겟은 펼침
+    st.subheader("🎯 타겟")
+    for t in sorted(targets, key=lambda x: (x.get("순위") or 99)):
+        td = _db_row_to_target_dict(t)
+        is_sel = bool(t.get("선택됨"))
+        star = "⭐ " if td.get("is_recommended") else ""
+        mark = "🟢 선택됨 · " if is_sel else ""
+        head = f"{mark}{star}#{td.get('rank')} · {td.get('label') or '(라벨 없음)'}"
+        with st.expander(head, expanded=is_sel):
+            desc = _build_target_description(td)
+            st.markdown(desc.replace("\n", "  \n") if desc else "_(상세 없음)_")
+
+    if not selected:
+        st.warning("선택된 타겟이 없어 02~05 결과를 표시할 수 없습니다.")
+        return
+
+    # 선택 타겟의 단계별 결과 (01 원본 + 02~05)
+    st.subheader(f"📄 단계별 결과 — 선택 타겟 #{selected.get('순위')}")
+    _STEP_VIEW = [
+        ("01", "01 결핍·타겟 (원본 전체)"),
+        ("02", "02 포지셔닝"),
+        ("03", "03 네이밍"),
+        ("04_a", "04 상세페이지 콘티"),
+        ("04_b", "04 검수 · 다듬은 콘티"),
+        ("04_1", "04-1 이미지 디렉션"),
+        ("05", "05 채널"),
+    ]
+    any_step = False
+    for key, label in _STEP_VIEW:
+        raw = (steps.get(key) or "").strip()
+        if not raw:
+            continue
+        any_step = True
+        with st.expander(f"▸ {label}", expanded=False):
+            st.markdown(raw)
+    if not any_step:
+        st.caption("02~05 단계 결과가 아직 적재되지 않았습니다 (01 타겟까지만).")
+
+
 # 홈에서 기존 run 클릭으로 진입한 경우 1회 복원
 if ss.get("current_run_id") and ss.get("_run_loaded") != ss["current_run_id"]:
     if _restore_from_run(ss["current_run_id"]):
@@ -573,6 +683,15 @@ with st.container(border=True):
         st.json(spec)
 
 st.divider()
+
+# ── 적재(대화형) run은 읽기 전용 단일 열 뷰로 표시하고 종료 ──
+# 자동화형 뷰어는 claude/gemini 2열 전제라 모드='interactive' 적재 run을 못 읽는다.
+# (owner/partner 무관 — 동료 조회를 위해 전용 읽기 뷰로 분기)
+if ss.get("current_run_id"):
+    _interactive_data = _load_interactive_run(ss["current_run_id"])
+    if _interactive_data is not None:
+        _render_interactive_run(_interactive_data)
+        st.stop()
 
 # ── 🚀 자동 모드 ─────────────────────────────────────────
 if not is_owner():
