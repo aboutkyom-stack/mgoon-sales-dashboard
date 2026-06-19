@@ -25,6 +25,7 @@ from pipeline.supabase_read import (
     delete_임시_products,
     format_file_counts,
     get_file_counts_by_type,
+    get_files_by_products,
     get_run_counts_by_product,
     list_products,
     list_엠군상태_values,
@@ -136,15 +137,19 @@ def _save_box_order_reversed(val: bool) -> None:
 
 
 # ── 진입 시 고아 임시 레코드 자동 정리 ──────────────────────
-try:
-    _deleted_temp = delete_임시_products()
-    if _deleted_temp > 0:
-        st.session_state.pop("_temp_product_id", None)
-        st.session_state.pop("edit_product_id", None)
-        st.session_state.pop("edit_mode", None)
-        st.toast(f"🧹 임시 제품 {_deleted_temp}개 정리됨")
-except Exception:
-    pass
+# 매 rerun마다 '임시%' 스캔 쿼리가 나가던 걸, 세션 첫 진입 1회 + 본 세션에서 임시 제품을
+# 만든 흔적(_temp_product_id)이 있을 때만 실행하도록 제한 (버튼 클릭 등 잦은 rerun 비용 절감).
+if (not st.session_state.get("_temp_cleanup_done")) or st.session_state.get("_temp_product_id"):
+    try:
+        _deleted_temp = delete_임시_products()
+        st.session_state["_temp_cleanup_done"] = True
+        if _deleted_temp > 0:
+            st.session_state.pop("_temp_product_id", None)
+            st.session_state.pop("edit_product_id", None)
+            st.session_state.pop("edit_mode", None)
+            st.toast(f"🧹 임시 제품 {_deleted_temp}개 정리됨")
+    except Exception:
+        pass
 
 st.title("📦 제품 조회")
 st.caption("🗄️ DB — 상품, 상품_파일 테이블")
@@ -168,6 +173,14 @@ if not rows:
 file_counts = get_file_counts_by_type()
 run_counts = get_run_counts_by_product()
 
+# 변경감지가 돌 active 제품(토글 ON·비테스트)의 파일을 미리 묶음 조회 → 제품별 get_files N+1 회피.
+# (기초입력 단계 snapshot의 파일 필드용. 엠군/상세 단계는 파일을 안 써 빈 리스트라도 무방.)
+_active_ids = [
+    r["id"] for r in rows
+    if _BOX_TO_SNAPSHOT_STAGE.get(compute_워크플로_단계(r)) and not r.get("is_test")
+]
+files_map = get_files_by_products(_active_ids)
+
 # 워크플로 박스 분류 + 행별 🔄 변경 감지 + 🚀 run 처리대기
 for r in rows:
     box_key = compute_워크플로_단계(r)
@@ -175,7 +188,7 @@ for r in rows:
     snap_stage = _BOX_TO_SNAPSHOT_STAGE.get(box_key)
     if snap_stage and not r.get("is_test"):
         try:
-            r["_변경_diff"] = compute_변경_diff(r, snap_stage)
+            r["_변경_diff"] = compute_변경_diff(r, snap_stage, files=files_map.get(r["id"], []))
         except Exception:
             r["_변경_diff"] = []
     else:

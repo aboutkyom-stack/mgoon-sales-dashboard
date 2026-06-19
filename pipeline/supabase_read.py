@@ -188,6 +188,33 @@ def get_files(상품_id: int) -> list[dict]:
         return []
 
 
+def get_files_by_products(product_ids: list[int]) -> dict[int, list[dict]]:
+    """여러 상품의 파일을 한 번에 조회 → {상품_id: [파일 행, ...]}.
+
+    목록에서 변경감지가 제품마다 get_files를 부르는 N+1을 피하려고 active 제품의
+    파일을 미리 묶음으로 받는 용도. id 1,000개 초과 시 청크로 나눠 조회.
+    """
+    if not product_ids:
+        return {}
+    out: dict[int, list[dict]] = {}
+    ids = list(product_ids)
+    for i in range(0, len(ids), CHUNK):
+        chunk = ids[i : i + CHUNK]
+        try:
+            res = (
+                _client()
+                .table("상품_파일")
+                .select("*")
+                .in_("상품_id", chunk)
+                .execute()
+            )
+        except Exception:
+            continue
+        for r in (res.data or []):
+            out.setdefault(r.get("상품_id"), []).append(r)
+    return out
+
+
 def get_thumbnail_url(드라이브_파일_id: str, size: int = 400) -> str:
     """Google Drive 썸네일 URL 생성."""
     return f"https://drive.google.com/thumbnail?id={드라이브_파일_id}&sz=w{size}"
@@ -328,7 +355,9 @@ def update_엠군상태(상품_id: int, 상태: str) -> None:
 # 새 그룹/필드/엠군 단계 추가 시 snapshot_schema.py만 갱신하면 박제·UI·diff 모두 자동 반영.
 
 
-def _extract_snapshot_field(row: dict, field: str, 상품_id: int) -> object:
+def _extract_snapshot_field(
+    row: dict, field: str, 상품_id: int, files: list[dict] | None = None
+) -> object:
     """단일 필드 → snapshot에 박제할 값.
 
     분기:
@@ -336,6 +365,8 @@ def _extract_snapshot_field(row: dict, field: str, 상품_id: int) -> object:
       - SNAPSHOT_FILE_FIELDS의 키    → [{"id":..., "name":...}, ...] (정렬)
       - 엠군_SNAPSHOT_STAGES의 키    → 단계별 리스트 (FK 타입에 따라 호출 분기)
       - 그 외                        → row[field] 단일 컬럼
+
+    files: 미리 조회한 상품 파일 목록(있으면 get_files 재조회 생략 — 목록 N+1 회피).
     """
     from . import snapshot_schema as _ss
 
@@ -346,10 +377,10 @@ def _extract_snapshot_field(row: dict, field: str, 상품_id: int) -> object:
     # 2) 파일 추적 가상 필드
     kind = _ss.파일_field_kind(field)
     if kind is not None:
-        files = get_files(상품_id)
+        file_list = files if files is not None else get_files(상품_id)
         items = [
             {"id": f.get("드라이브_파일_id"), "name": f.get("파일명")}
-            for f in files
+            for f in file_list
             if f.get("파일_유형") == kind and f.get("드라이브_파일_id")
         ]
         items.sort(key=lambda x: (x["id"] or ""))
@@ -644,11 +675,17 @@ def _build_all_엠군_stage_snapshots(상품_id: int, stage_keys: list[str]) -> 
     return result
 
 
-def _build_snapshot_payload(상품_id: int, stage: str) -> dict:
+def _build_snapshot_payload(
+    상품_id: int, stage: str,
+    row: dict | None = None, files: list[dict] | None = None,
+) -> dict:
     """단계별 snapshot dict 생성 — settings.snapshot_fields_<stage>에 등재된 필드만 포함.
 
     상세페이지 단계는 등재 필드가 비어 있으면 빈 dict 반환 (현재 후속 작업자 없음).
     엠군 단계 필드는 bulk 조회로 한 번에 처리(N+1 회피) — 단건 경로와 동일 출력.
+
+    row:   이미 로드된 상품 행(있으면 get_product 재조회 생략).
+    files: 이미 조회한 상품 파일 목록(있으면 get_files 재조회 생략).
     """
     from .settings import snapshot_fields_for_stage
     from . import snapshot_schema as _ss
@@ -657,17 +694,19 @@ def _build_snapshot_payload(상품_id: int, stage: str) -> dict:
     엠군_fields = [f for f in fields if _ss.엠군_stage_info(f) is not None]
     엠군_snaps = _build_all_엠군_stage_snapshots(상품_id, 엠군_fields) if 엠군_fields else {}
 
-    # 비엠군 필드가 있을 때만 상품 row 조회. 엠군 단계(🔵 박스)는 row를 쓰지 않으므로
-    # 큰 *_완료_snapshot 블롭까지 통째로 재조회하는 낭비를 피한다.
+    # 비엠군 필드가 있을 때만 상품 row 필요. 엠군 단계(🔵 박스)는 row를 안 쓰므로
+    # 큰 *_완료_snapshot 블롭까지 통째로 재조회하는 낭비를 피한다. row가 넘어오면 그대로 사용.
     비엠군_fields = [f for f in fields if f not in 엠군_snaps]
-    row = (get_product(상품_id) or {}) if 비엠군_fields else {}
+    if 비엠군_fields and row is None:
+        row = get_product(상품_id) or {}
+    row = row or {}
 
     payload: dict = {}
     for f in fields:
         if f in 엠군_snaps:
             payload[f] = 엠군_snaps[f]
         else:
-            payload[f] = _extract_snapshot_field(row, f, 상품_id)
+            payload[f] = _extract_snapshot_field(row, f, 상품_id, files=files)
     return payload
 
 
@@ -731,7 +770,7 @@ def compute_워크플로_단계(row: dict) -> str:
     return WORKFLOW_BOX_NONE
 
 
-def compute_변경_diff(row: dict, stage: str) -> list[dict]:
+def compute_변경_diff(row: dict, stage: str, files: list[dict] | None = None) -> list[dict]:
     """행의 stage snapshot vs 현재 값 비교 → 변경된 필드 리스트.
 
     반환 형식: [{"field": "카테고리", "old": "...", "new": "..."}, ...]
@@ -740,6 +779,9 @@ def compute_변경_diff(row: dict, stage: str) -> list[dict]:
     비교 강건성 규칙:
       - snapshot에 없는 키(현재 필드 목록에 새로 추가된 필드)는 비교 제외 → false positive 회피.
       - snapshot에 있고 현재 추출 값에 없는 키는 None vs None으로 떨어져 자동 무시.
+
+    files: 이미 조회한 상품 파일 목록(목록에서 active 제품 파일을 미리 묶음 조회해 넘기면
+           제품별 get_files N+1을 피한다). row도 그대로 현재값 계산에 재사용해 get_product 생략.
     """
     if stage not in _WORKFLOW_COLS:
         return []
@@ -749,7 +791,7 @@ def compute_변경_diff(row: dict, stage: str) -> list[dict]:
         return []
 
     상품_id = row["id"]
-    current = _build_snapshot_payload(상품_id, stage)
+    current = _build_snapshot_payload(상품_id, stage, row=row, files=files)
 
     out: list[dict] = []
     # 비교 대상은 snapshot에 있는 키 ∩ 현재 추출 키 (둘 중 하나에만 있으면 무시)
