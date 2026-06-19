@@ -544,6 +544,215 @@ def _find_selected_target_dict(selected_db_id: int) -> dict | None:
     return None
 
 
+# ── 04-1 이미지 디렉션 (대화형 적재) — GPT(ChatGPT) 복붙 카드 빌더 ──────────
+# 동료가 ChatGPT 대화창에 그대로 복붙하는 자연어 블록을 만든다.
+# 데이터는 core.md 스키마(엠군_이미지디렉션.섹션들 JSONB): section_no /
+# section_name / canvas(문자열) / image_type / composition /
+# main_subject{what,details,props} / background / lighting / color_palette[] /
+# text_elements[{label,text,position,style}] / negative_avoided /
+# production_method / notes / (직접촬영 컷만) shooting_guide
+_CANVAS_PX = {
+    "1:1": "1024x1024", "4:5": "≈1024x1280", "3:4": "≈1024x1536",
+    "2:3": "1024x1536", "9:16": "2160x3840", "16:9": "2048x1152",
+}
+
+_GLOBAL_FIXED_NOTE = (
+    "📎 제품 사진을 함께 첨부하고 '이미지1 = 제품 형태·색상·비율 기준'으로 지정하세요.\n"
+    "   참고 이미지에 없는 부품·글자·로고·버튼은 새로 만들지 마세요.\n"
+    "🚫 워터마크·가짜 QR·없는 로고·미확인 인증·실물과 다른 구성품은 생성하지 마세요."
+)
+
+# text_elements.label → GPT에 전달할 위계 힌트 (크기·강조 우선순위를 명시).
+# 데이터의 style(폰트·색)은 그대로 두고, 라벨이 함축하는 위계를 풀어준다.
+# GPT Image는 긴 한글을 작게/흐리게 그리는 경향이 있어, '크게·또렷이'를 명시한다.
+_TEXT_HIER = {
+    "HEADLINE": "매우 크게(이미지 가로폭 70~90%)·굵게, 배경과 강한 대비로 또렷이",
+    "TITLE": "매우 크게(이미지 가로폭 70~90%)·굵게, 배경과 강한 대비로 또렷이",
+    "SUB": "크고 또렷하게(헤드라인 다음 크기)",
+    "SUBHEAD": "크고 또렷하게(헤드라인 다음 크기)",
+    "BODY": "또렷이 읽히는 큰 본문 크기(작게·흐리게 금지)",
+    "CAPTION": "또렷이 읽히는 크기(과하게 작지 않게)",
+    "BADGE": "굵고 또렷한 강조 뱃지",
+    "CTA": "크고 굵은 버튼형 강조 · 행동 유도",
+}
+
+
+def _canvas_with_px(canvas: str) -> str:
+    """캔버스 비율 문자열에 GPT Image 권장 픽셀 사이즈를 병기."""
+    c = (canvas or "").strip()
+    px = _CANVAS_PX.get(c)
+    return f"{c} ({px})" if px else c
+
+
+def _production_badge(pm: str) -> tuple[str, str]:
+    """production_method → (배지 라벨, 종류키). 종류키: ai|shoot|existing|mix|unknown."""
+    s = pm or ""
+    has_ai = ("AI" in s) or ("생성" in s)
+    has_shoot = ("직접" in s) or ("촬영" in s)
+    has_exist = "기존" in s
+    if has_exist and has_shoot:
+        return ("🔀 제안: 기존/직접 택1", "mix")
+    if has_shoot and not has_exist and not has_ai:
+        return ("📸 제안: 직접 촬영/동영상", "shoot")
+    if has_exist:
+        return ("🖼️ 제안: 기존 이미지", "existing")
+    if has_ai:
+        return ("🟢 제안: GPT 생성", "ai")
+    return ("❓ 미지정", "unknown")
+
+
+def _build_global_block(ds: dict | None) -> str:
+    """디자인시스템(전역 규칙) → GPT 세션당 1회 복붙용 블록."""
+    lines = ["[전역 — GPT 세션 시작 시 제품 사진과 함께 1회만 입력]"]
+    if isinstance(ds, dict):
+        cd = ds.get("canvas_default")
+        if cd:
+            lines.append(f"- 기본 캔버스: {_canvas_with_px(cd)}")
+        cg = ds.get("color_palette_global") or ds.get("color_palette") or []
+        if cg:
+            lines.append(f"- 공통 색상: {' / '.join(str(c) for c in cg)}")
+        pc = ds.get("people_consistency")
+        if pc:
+            lines.append(f"- 인물 일관성: {pc}")
+        fb = ds.get("forbidden") or []
+        if fb:
+            lines.append(f"- 전역 금지: {' / '.join(str(f) for f in fb)}")
+    lines.append(_GLOBAL_FIXED_NOTE)
+    return "\n".join(lines)
+
+
+def _build_cut_block(sec: dict, global_cp: list | None = None) -> str:
+    """섹션 1개 → GPT 복붙용 자연어 블록. 색상은 전역과 다를 때(예외)만 표기."""
+    L: list[str] = []
+    canvas = _canvas_with_px(sec.get("canvas") or "")
+    if canvas:
+        L.append(f"- 캔버스: {canvas}")
+    if sec.get("background"):
+        L.append(f"- 배경/장면: {sec['background']}")
+    ms = sec.get("main_subject")
+    if isinstance(ms, dict):
+        head = " — ".join(p for p in [ms.get("what"), ms.get("details")] if p)
+        if head:
+            L.append(f"- 주 피사체: {head}")
+        if ms.get("props"):
+            L.append(f"- 소품: {ms['props']}")
+    elif ms:
+        L.append(f"- 주 피사체: {ms}")
+    if sec.get("composition"):
+        L.append(f"- 구도: {sec['composition']}")
+    if sec.get("lighting"):
+        L.append(f"- 조명·스타일: {sec['lighting']}")
+    cp = sec.get("color_palette") or []
+    if cp and list(cp) != list(global_cp or []):
+        L.append(f"- 색상(이 컷 예외): {' / '.join(str(c) for c in cp)}")
+    te = sec.get("text_elements") or []
+    if te:
+        L.append("- 이미지 속 텍스트 (모든 글자는 크고 또렷하게·배경과 강한 대비 / 아래 문구만 정확히 표기 / 다른 글자·오타 생성 금지 / 줄바꿈 유지):")
+        for t in te:
+            if not isinstance(t, dict):
+                continue
+            label = (t.get("label") or "").strip()
+            text = " ".join((t.get("text") or "").split())
+            pos = t.get("position") or ""
+            style = t.get("style") or ""
+            hier = _TEXT_HIER.get(label.upper(), "")
+            tag = (f"{label}·{hier}" if hier else label) if label else ""
+            L.append(f'  · [{tag}] "{text}"' if tag else f'  · "{text}"')
+            sub = " / ".join(
+                x for x in [f"위치 {pos}" if pos else "", f"글자 스타일 {style}" if style else ""] if x
+            )
+            if sub:
+                L.append(f"      {sub}")
+    na = sec.get("negative_avoided")
+    if na:
+        L.append(f"- 생성 금지: {na}")
+    return "\n".join(L)
+
+
+def _strip_json_fences(text: str) -> str:
+    """raw 출력에서 ```json ...``` / SECTIONS_JSON 블록 제거 (구조화 실패 시 폴백용)."""
+    out = re.sub(r"```json.*?```", "", text or "", flags=re.DOTALL)
+    out = re.sub(r"---SECTIONS_JSON---.*?(?:---END_SECTIONS_JSON---|$)", "", out, flags=re.DOTALL)
+    return out.strip()
+
+
+def _extract_img_direction(dir_rows: list[dict]) -> dict | None:
+    """엠군_이미지디렉션 행 목록 → {sections, design_system, raw}. 구조화 우선."""
+    for d in (dir_rows or []):
+        sec = d.get("섹션들")
+        if isinstance(sec, str):
+            try:
+                sec = json.loads(sec)
+            except Exception:
+                sec = None
+        ds = d.get("디자인시스템")
+        if isinstance(ds, str):
+            try:
+                ds = json.loads(ds)
+            except Exception:
+                ds = None
+        if sec or ds:
+            return {"sections": sec or [], "design_system": ds or {},
+                    "raw": d.get("원본_출력") or ""}
+    for d in (dir_rows or []):
+        if d.get("원본_출력"):
+            return {"sections": [], "design_system": {}, "raw": d["원본_출력"]}
+    return None
+
+
+def _render_image_direction_cards(img: dict) -> None:
+    """대화형 적재 04-1을 GPT 복붙 카드로 렌더."""
+    sections = img.get("sections") or []
+    ds = img.get("design_system") or {}
+    if not sections:
+        body = _strip_json_fences(img.get("raw") or "")
+        st.markdown(body or "_(이미지 디렉션 내용 없음)_")
+        return
+
+    st.warning(
+        "**🔤 폰트·글자 안내 (꼭 읽어주세요)**\n\n"
+        "GPT Image는 폰트 파일을 쓰지 않고 '굵은 산세리프 느낌'처럼 글자를 **그림으로 그립니다.** "
+        "그래서 아래 디렉션의 폰트명(예: G마켓산스)은 **분위기 힌트일 뿐**, 실제 그 폰트로 찍히는 게 아닙니다.\n\n"
+        "- 진짜 폰트 **라이선스는 후편집**(디자인 툴에서 실제 폰트를 얹을 때)에서만 문제됩니다. GPT 생성 단계에선 신경 안 써도 됩니다.\n"
+        "- **요청 시 도입 가능:** 상업적 무료 폰트만 쓰도록 '안전 폰트 목록'을 시스템에 넣을 수 있어요. "
+        "후보 — 프리텐다드(가장 안전·OFL)·G마켓산스·노토산스KR·나눔스퀘어 등. "
+        "(폰트별 세부 조건(임베딩·수정·BI 사용)은 도입 시 개별 확인)\n\n"
+        "→ **안전 폰트 목록 도입을 원하면 관리자에게 요청하세요. (현재 미적용)**"
+    )
+
+    gcp = (ds.get("color_palette_global") or ds.get("color_palette") or []) if isinstance(ds, dict) else []
+
+    st.markdown("**📋 전역 디자인 — 세션당 1회 복붙**")
+    st.code(_build_global_block(ds), language="text")
+    st.caption("👆 새 GPT 세션 시작 시 제품 사진과 함께 1회만 입력. 아래 각 컷은 따로 복붙하세요.")
+    st.divider()
+
+    for sec in sections:
+        if not isinstance(sec, dict):
+            continue
+        no = sec.get("section_no")
+        name = sec.get("section_name") or "(이름 없음)"
+        itype = sec.get("image_type") or ""
+        badge, _ = _production_badge(sec.get("production_method") or "")
+        canvas = _canvas_with_px(sec.get("canvas") or "")
+        with st.container(border=True):
+            st.markdown(f"#### ■ #{no} · {name}")
+            meta = "　·　".join(x for x in [badge, itype, f"📐 {canvas}" if canvas else ""] if x)
+            if meta:
+                st.caption(meta)
+            # production_method는 엠군의 '제안'일 뿐 — 동료가 어떤 컷이든 AI로 만들 수 있게
+            # 모든 컷 복붙 카드를 항상 펼친다.
+            st.code(_build_cut_block(sec, gcp), language="text")
+            sg = sec.get("shooting_guide")
+            if isinstance(sg, dict) and sg:
+                with st.expander("🎬 촬영 가이드 (직접 촬영/동영상 시 참고)", expanded=False):
+                    st.json(sg)
+            notes = sec.get("notes")
+            if notes:
+                with st.expander("▾ 내부 메모 (GPT에 넣지 마세요)", expanded=False):
+                    st.caption(notes)
+
+
 def _load_interactive_run(run_id: int) -> dict | None:
     """적재(대화형) run이면 읽기 전용 표시용 데이터 묶음을 반환. 아니면 None.
 
@@ -567,6 +776,7 @@ def _load_interactive_run(run_id: int) -> dict | None:
         return ""
 
     steps: dict[str, str] = {}
+    img_direction: dict | None = None
     if selected:
         tid = selected["id"]
         # 01 원본 전체(타겟 행의 원본_출력 = 01_deficit_target.md 본문)
@@ -581,29 +791,36 @@ def _load_interactive_run(run_id: int) -> dict | None:
         steps["04_a"] = (detail_row or {}).get("원본_출력") or ""
         if detail_row:
             steps["04_b"] = _first_raw(storage.get_상세페이지_검수(detail_row["id"]))
-        steps["04_1"] = _first_raw(storage.get_이미지디렉션(tid))
+        dir_rows = storage.get_이미지디렉션(tid)
+        steps["04_1"] = _first_raw(dir_rows)
+        img_direction = _extract_img_direction(dir_rows)
         steps["05"] = _first_raw(storage.get_채널(tid))
 
-    return {"run": run, "targets": targets, "selected": selected, "steps": steps}
+    return {"run": run, "targets": targets, "selected": selected,
+            "steps": steps, "img_direction": img_direction}
 
 
 def _render_interactive_run(data: dict) -> None:
-    """적재(대화형) run을 읽기 전용 단일 열로 표시 (자동 실행 버튼 없음)."""
+    """적재(대화형) run을 읽기 전용으로 표시. 동료가 주로 보는 04-1을 최상단에 둔다."""
     run = data["run"]
     targets = data["targets"]
     selected = data["selected"]
     steps = data["steps"]
+    img_direction = data.get("img_direction")
 
     st.info(
         "📂 **대화형(엠군 수동) 적재 결과 — 읽기 전용**\n\n"
-        "이 실행은 대화형으로 작업해 적재한 결과입니다. 자동 파이프라인(Claude/Gemini)과 "
-        "저장 형식이 달라 아래에 단일 열로 표시합니다. (자동 실행 버튼은 표시되지 않습니다)"
+        "GPT Image(ChatGPT) 복붙용으로 정리한 화면입니다. 각 컷 코드블록 오른쪽 위 "
+        "복사 아이콘으로 그대로 복사해 ChatGPT에 붙여넣으세요."
     )
 
-    # run 메타 (시도 / 가설)
+    # run 메타 (시도 / 선택 타겟 / 가설)
     with st.container(border=True):
         if run.get("시도_라벨"):
             st.markdown(f"**시도**: {run['시도_라벨']}")
+        if selected:
+            _sel = _db_row_to_target_dict(selected)
+            st.caption(f"🎯 선택 타겟 #{_sel.get('rank')} · {_sel.get('label') or ''}")
         if run.get("타겟_가설"):
             st.caption(f"🎯 타겟 가설: {run['타겟_가설']}")
         if run.get("결핍_가설"):
@@ -611,47 +828,48 @@ def _render_interactive_run(data: dict) -> None:
         if run.get("대화형_폴더명"):
             st.caption(f"📁 원본 폴더: `{run['대화형_폴더명']}`")
 
+    # ── 04-1 이미지 디렉션 — 최상단 (동료 메인 작업물) ──
+    st.subheader("🎨 04-1 이미지 디렉션 — GPT 복붙용")
+    if img_direction and (img_direction.get("sections") or img_direction.get("raw")):
+        _render_image_direction_cards(img_direction)
+    else:
+        st.caption("04-1 이미지 디렉션이 아직 적재되지 않았습니다.")
+
+    # ── 그 외 단계 (필요할 때 펼치기) ──
+    st.divider()
+    st.subheader("📂 그 외 단계 결과 (필요할 때 펼치기)")
     if not targets:
-        st.warning("이 실행에는 타겟이 없습니다 (00·상품 단계만 적재됨).")
+        st.caption("이 실행에는 타겟이 없습니다 (00·상품 단계만 적재됨).")
         return
 
-    # 타겟 후보 — 선택 타겟은 펼침
-    st.subheader("🎯 타겟")
     for t in sorted(targets, key=lambda x: (x.get("순위") or 99)):
         td = _db_row_to_target_dict(t)
         is_sel = bool(t.get("선택됨"))
         star = "⭐ " if td.get("is_recommended") else ""
         mark = "🟢 선택됨 · " if is_sel else ""
         head = f"{mark}{star}#{td.get('rank')} · {td.get('label') or '(라벨 없음)'}"
-        with st.expander(head, expanded=is_sel):
+        with st.expander(f"🎯 타겟 — {head}", expanded=False):
             desc = _build_target_description(td)
             st.markdown(desc.replace("\n", "  \n") if desc else "_(상세 없음)_")
 
     if not selected:
-        st.warning("선택된 타겟이 없어 02~05 결과를 표시할 수 없습니다.")
+        st.caption("선택된 타겟이 없어 02~05 결과를 표시할 수 없습니다.")
         return
 
-    # 선택 타겟의 단계별 결과 (01 원본 + 02~05)
-    st.subheader(f"📄 단계별 결과 — 선택 타겟 #{selected.get('순위')}")
     _STEP_VIEW = [
         ("01", "01 결핍·타겟 (원본 전체)"),
         ("02", "02 포지셔닝"),
         ("03", "03 네이밍"),
         ("04_a", "04 상세페이지 콘티"),
         ("04_b", "04 검수 · 다듬은 콘티"),
-        ("04_1", "04-1 이미지 디렉션"),
         ("05", "05 채널"),
     ]
-    any_step = False
     for key, label in _STEP_VIEW:
         raw = (steps.get(key) or "").strip()
         if not raw:
             continue
-        any_step = True
         with st.expander(f"▸ {label}", expanded=False):
             st.markdown(raw)
-    if not any_step:
-        st.caption("02~05 단계 결과가 아직 적재되지 않았습니다 (01 타겟까지만).")
 
 
 # 홈에서 기존 run 클릭으로 진입한 경우 1회 복원
