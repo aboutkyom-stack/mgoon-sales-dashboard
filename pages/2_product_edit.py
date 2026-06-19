@@ -698,6 +698,9 @@ else:
 # ─────────────────────────────────────────────────────────
 with tab_이미지:
     # ── 등록된 이미지 / 동영상 조회 ───────────────────────
+    # 이 탭의 파일 조회는 모두 이 한 번의 결과(drive_files)를 재사용한다 (rerun당 get_files 1회).
+    # 파일을 바꾸는 동작(Drive 재스캔·업로드)은 끝에서 st.rerun() 하므로, 아래 재사용 지점에
+    # 도달하는 시점엔 항상 최신 상태가 보장된다. (재스캔 내부의 스캔 후 카운트만 예외로 직접 재조회)
     drive_files = get_files(product_id)
     images = [f for f in drive_files if f.get("파일_유형") == "image" and f.get("드라이브_파일_id")]
     videos = [f for f in drive_files if f.get("파일_유형") == "video" and f.get("드라이브_파일_id")]
@@ -871,7 +874,7 @@ with tab_이미지:
         _account_folders = list_account_folders(row)
 
         # 기본 계정: 이미 파일이 가장 많이 올라간 계정 → 없으면 ACCOUNTS[0]
-        _existing_files  = get_files(product_id) if product_id else []
+        _existing_files  = drive_files if product_id else []
         _used_accounts   = [f.get("계정") for f in _existing_files if f.get("계정")]
         _default_account = (
             max(set(_used_accounts), key=_used_accounts.count)
@@ -1080,8 +1083,8 @@ with tab_이미지:
                     _p["image"].save(_buf, format="PNG")
                     _normalized.append({"name": _p["name"], "bytes": _buf.getvalue()})
 
-                # Q2: 중복 파일명 체크
-                _existing_names = {f.get("파일명") for f in get_files(product_id)}
+                # Q2: 중복 파일명 체크 (업로드 insert 전 상태 = drive_files 그대로 사용)
+                _existing_names = {f.get("파일명") for f in drive_files}
                 _new_files = [n for n in _normalized if n["name"] not in _existing_names]
                 _dup_files = [n for n in _normalized if n["name"] in _existing_names]
                 if _dup_files:
@@ -1123,7 +1126,7 @@ with tab_이미지:
 
     # ── Vision Pass ───────────────────────────────────────
     _vp_images = [
-        f for f in get_files(product_id)
+        f for f in drive_files
         if f.get("파일_유형") == "image" and f.get("드라이브_파일_id")
     ]
 
@@ -1990,7 +1993,7 @@ with tab_이미지:
 
     # ── 동영상 Vision Pass (Gemini 전용) ─────────────────────
     _vp_videos = [
-        f for f in get_files(product_id)
+        f for f in drive_files
         if f.get("파일_유형") == "video" and f.get("드라이브_파일_id")
     ]
 
