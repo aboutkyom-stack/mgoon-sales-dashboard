@@ -265,6 +265,54 @@ class SupabaseStorage(Storage):
         )
         return res.data or []
 
+    # ── 변경감지 N+1 회피용 bulk 조회 (여러 id를 in_으로 한 번에) ──────────
+    # 단건 getter와 같은 테이블/정렬을 쓰되 id 리스트를 받는다. 호출부에서
+    # id별로 그룹핑해 사용한다 (supabase_read._build_all_엠군_stage_snapshots).
+    def get_targets_for_runs(self, run_ids: list[int]) -> list[dict]:
+        if not run_ids:
+            return []
+        res = (
+            _db().table("엠군_타겟").select("*")
+            .in_("실행_id", run_ids).order("모델").order("순위").execute()
+        )
+        return res.data or []
+
+    def get_positioning_for_targets(self, target_ids: list[int]) -> list[dict]:
+        if not target_ids:
+            return []
+        res = _db().table("엠군_포지셔닝").select("*").in_("타겟_id", target_ids).order("모델").execute()
+        return res.data or []
+
+    def get_네이밍_for_targets(self, target_ids: list[int]) -> list[dict]:
+        if not target_ids:
+            return []
+        res = _db().table("엠군_네이밍").select("*").in_("타겟_id", target_ids).order("모델").execute()
+        return res.data or []
+
+    def get_상세페이지_for_targets(self, target_ids: list[int]) -> list[dict]:
+        if not target_ids:
+            return []
+        res = _db().table("엠군_상세페이지").select("*").in_("타겟_id", target_ids).order("모델").execute()
+        return res.data or []
+
+    def get_이미지디렉션_for_targets(self, target_ids: list[int]) -> list[dict]:
+        if not target_ids:
+            return []
+        res = _db().table("엠군_이미지디렉션").select("*").in_("타겟_id", target_ids).order("모델").execute()
+        return res.data or []
+
+    def get_채널_for_targets(self, target_ids: list[int]) -> list[dict]:
+        if not target_ids:
+            return []
+        res = _db().table("엠군_채널").select("*").in_("타겟_id", target_ids).order("모델").execute()
+        return res.data or []
+
+    def get_상세페이지_검수_for_details(self, detail_ids: list[int]) -> list[dict]:
+        if not detail_ids:
+            return []
+        res = _db().table("엠군_상세페이지_검수").select("*").in_("상세페이지_id", detail_ids).order("id", desc=True).execute()
+        return res.data or []
+
     def mark_target_selected(self, target_id: int, selected: bool = True) -> None:
         _db().table("엠군_타겟").update({"선택됨": selected}).eq("id", target_id).execute()
 

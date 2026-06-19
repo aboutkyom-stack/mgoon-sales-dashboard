@@ -524,18 +524,150 @@ def _build_엠군_legacy_runs_snapshot(상품_id: int) -> list[dict]:
     return out
 
 
+# 단계 method_name(snapshot_schema) → storage bulk 메서드명 (target-FK 단계)
+_BULK_TARGET_METHOD: dict[str, str] = {
+    "get_positioning":   "get_positioning_for_targets",
+    "get_네이밍":         "get_네이밍_for_targets",
+    "get_상세페이지":     "get_상세페이지_for_targets",
+    "get_이미지디렉션":   "get_이미지디렉션_for_targets",
+    "get_채널":           "get_채널_for_targets",
+}
+
+
+def _build_all_엠군_stage_snapshots(상품_id: int, stage_keys: list[str]) -> dict[str, list[dict]]:
+    """여러 엠군 단계 snapshot을 bulk 조회로 한 번에 생성 (N+1 회피).
+
+    _build_엠군_stage_snapshot을 단계마다 호출하면 list_runs/get_targets가 중복되고
+    타겟별 단계 조회가 1건씩 순차 실행돼 느리다(🔵 제품당 수십 회 왕복). 이 함수는
+    run·target·각 단계 테이블을 in_으로 한 번씩만 조회하고 메모리에서 조립한다.
+
+    ⚠️ 출력은 단계별로 `_build_엠군_stage_snapshot`과 **동일한 구조·순서**를 보장한다.
+       (정렬이 달라지면 기존 박제값과 diff가 어긋나 거짓 변동이 뜬다.)
+       - run:    list_runs_by_product 순서(id desc)
+       - target: 각 run 내 get_targets 순서(모델, 순위), 단계행 모델 순
+       - detail: 상세페이지 모델 순 → 검수 id desc 순
+    """
+    from . import snapshot_schema as _ss
+    from .storage import get_storage
+
+    result: dict[str, list[dict]] = {k: [] for k in stage_keys}
+    if not stage_keys:
+        return result
+
+    stg = get_storage()
+    try:
+        runs = stg.list_runs_by_product(상품_id)  # id desc — 기존과 동일
+    except Exception:
+        return result
+    run_ids = [r["id"] for r in runs if r.get("id") is not None]
+    if not run_ids:
+        return result
+
+    # 타겟 bulk → run별 그룹 (전역 정렬 모델,순위 → 그룹 내에서도 동일 순서 보존)
+    try:
+        all_targets = stg.get_targets_for_runs(run_ids)
+    except Exception:
+        all_targets = []
+    targets_by_run: dict[int, list[dict]] = {}
+    for t in all_targets:
+        targets_by_run.setdefault(t.get("실행_id"), []).append(t)
+    all_target_ids = [t["id"] for t in all_targets if t.get("id") is not None]
+
+    for stage_key in stage_keys:
+        info = _ss.엠군_stage_info(stage_key)
+        if info is None:
+            continue
+        _label, fk_type, method_name = info
+        out: list[dict] = []
+
+        if fk_type == "run":
+            # 01 타겟 — run별 타겟 묶음이 곧 data
+            for r in runs:
+                rid = r.get("id")
+                out.append({
+                    "run_id": rid,
+                    "data": _normalize_엠군_data(targets_by_run.get(rid, [])),
+                })
+
+        elif fk_type == "target":
+            bulk_name = _BULK_TARGET_METHOD.get(method_name)
+            bulk = getattr(stg, bulk_name, None) if bulk_name else None
+            rows_by_target: dict[int, list[dict]] = {}
+            if bulk and all_target_ids:
+                try:
+                    for row in bulk(all_target_ids):
+                        rows_by_target.setdefault(row.get("타겟_id"), []).append(row)
+                except Exception:
+                    rows_by_target = {}
+            for r in runs:
+                rid = r.get("id")
+                for t in targets_by_run.get(rid, []):
+                    tid = t.get("id")
+                    out.append({
+                        "run_id": rid,
+                        "target_id": tid,
+                        "data": _normalize_엠군_data(rows_by_target.get(tid, [])),
+                    })
+
+        elif fk_type == "detail":
+            details_by_target: dict[int, list[dict]] = {}
+            detail_ids: list[int] = []
+            if all_target_ids:
+                try:
+                    for d in stg.get_상세페이지_for_targets(all_target_ids):
+                        details_by_target.setdefault(d.get("타겟_id"), []).append(d)
+                        if d.get("id") is not None:
+                            detail_ids.append(d["id"])
+                except Exception:
+                    details_by_target = {}
+            검수_by_detail: dict[int, list[dict]] = {}
+            if detail_ids:
+                try:
+                    for rv in stg.get_상세페이지_검수_for_details(detail_ids):
+                        검수_by_detail.setdefault(rv.get("상세페이지_id"), []).append(rv)
+                except Exception:
+                    검수_by_detail = {}
+            for r in runs:
+                rid = r.get("id")
+                for t in targets_by_run.get(rid, []):
+                    tid = t.get("id")
+                    for d in details_by_target.get(tid, []):
+                        did = d.get("id")
+                        out.append({
+                            "run_id": rid,
+                            "target_id": tid,
+                            "detail_id": did,
+                            "data": _normalize_엠군_data(검수_by_detail.get(did, [])),
+                        })
+
+        result[stage_key] = out
+    return result
+
+
 def _build_snapshot_payload(상품_id: int, stage: str) -> dict:
     """단계별 snapshot dict 생성 — settings.snapshot_fields_<stage>에 등재된 필드만 포함.
 
     상세페이지 단계는 등재 필드가 비어 있으면 빈 dict 반환 (현재 후속 작업자 없음).
+    엠군 단계 필드는 bulk 조회로 한 번에 처리(N+1 회피) — 단건 경로와 동일 출력.
     """
     from .settings import snapshot_fields_for_stage
+    from . import snapshot_schema as _ss
 
-    row = get_product(상품_id) or {}
     fields = snapshot_fields_for_stage(stage)
+    엠군_fields = [f for f in fields if _ss.엠군_stage_info(f) is not None]
+    엠군_snaps = _build_all_엠군_stage_snapshots(상품_id, 엠군_fields) if 엠군_fields else {}
+
+    # 비엠군 필드가 있을 때만 상품 row 조회. 엠군 단계(🔵 박스)는 row를 쓰지 않으므로
+    # 큰 *_완료_snapshot 블롭까지 통째로 재조회하는 낭비를 피한다.
+    비엠군_fields = [f for f in fields if f not in 엠군_snaps]
+    row = (get_product(상품_id) or {}) if 비엠군_fields else {}
+
     payload: dict = {}
     for f in fields:
-        payload[f] = _extract_snapshot_field(row, f, 상품_id)
+        if f in 엠군_snaps:
+            payload[f] = 엠군_snaps[f]
+        else:
+            payload[f] = _extract_snapshot_field(row, f, 상품_id)
     return payload
 
 
