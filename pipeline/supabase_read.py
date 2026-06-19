@@ -827,6 +827,30 @@ def format_file_counts(c: dict[str, int]) -> str:
     return " ".join(parts)
 
 
+def get_run_counts_by_product() -> dict[int, int]:
+    """상품별 엠군 실행(run) 개수. {상품_id: N}
+
+    엠군_실행 테이블을 상품_id로 bulk 카운트. run이 1개 이상이면 '엠군 파이프라인을
+    한 번 이상 돌렸다'는 뜻 — 🟠 기초자료 박스(기초입력 ON·엠군 OFF)에서 아직
+    엠군완료 토글을 안 켰다면 '엠군완료 처리 대기' 신호로 쓴다.
+    """
+    try:
+        res = (
+            _client()
+            .table("엠군_실행")
+            .select("상품_id")
+            .execute()
+        )
+        counts: dict[int, int] = {}
+        for row in res.data or []:
+            pid = row.get("상품_id")
+            if pid is not None:
+                counts[pid] = counts.get(pid, 0) + 1
+        return counts
+    except Exception:
+        return {}
+
+
 def list_계정_values() -> list[str]:
     """상품_파일에 등록된 계정 목록."""
     try:

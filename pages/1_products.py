@@ -25,6 +25,7 @@ from pipeline.supabase_read import (
     delete_임시_products,
     format_file_counts,
     get_file_counts_by_type,
+    get_run_counts_by_product,
     list_products,
     list_엠군상태_values,
     set_엠군작업대상,
@@ -165,8 +166,9 @@ if not rows:
     st.stop()
 
 file_counts = get_file_counts_by_type()
+run_counts = get_run_counts_by_product()
 
-# 워크플로 박스 분류 + 행별 🔄 변경 감지
+# 워크플로 박스 분류 + 행별 🔄 변경 감지 + 🚀 run 처리대기
 for r in rows:
     box_key = compute_워크플로_단계(r)
     r[_STAGE_KEY] = box_key
@@ -179,6 +181,15 @@ for r in rows:
     else:
         r["_변경_diff"] = []
     r["_변경_여부"] = bool(r["_변경_diff"])
+
+    # 🚀 run: 엠군 실행 개수. 🟠 기초자료 박스(기초입력 ON·엠군 OFF)인데 run이
+    # 이미 있으면 = 엠군완료 토글을 안 켠 '처리 대기' 상태.
+    r["_run_count"] = run_counts.get(r["id"], 0)
+    r["_run_pending"] = (
+        box_key == WORKFLOW_BOX_BASIC
+        and r["_run_count"] >= 1
+        and not r.get("is_test")
+    )
 
 # 박스별 카운트 (테스트는 별도)
 def _count_box(box_key: str) -> int:
@@ -218,8 +229,10 @@ df_all.insert(
 )
 # 🔄 변경 감지 컬럼 — diff가 있으면 🔄 표시, 없으면 빈 칸
 df_all.insert(2, "🔄 변동", df_all["_변경_여부"].apply(lambda x: "🔄" if x else ""))
+# 🚀 run 컬럼 — 엠군 실행(run) 개수. 0이면 빈 칸.
+df_all.insert(3, "🚀 run", df_all["_run_count"].apply(lambda n: f"🚀{n}" if n else ""))
 if "엠군작업대상" in df_all.columns:
-    df_all.insert(3, "🎯엠군 대상", df_all["엠군작업대상"].apply(
+    df_all.insert(4, "🎯엠군 대상", df_all["엠군작업대상"].apply(
         lambda x: "✅" if x else "⬛"
     ))
 
@@ -238,11 +251,18 @@ all_cols = visible_data_cols
 # ── 컬럼 체크박스 초기화 (세션 첫 진입 시) ──
 if "col_prefs_loaded" not in st.session_state:
     saved = _load_col_prefs()
+    _saved_curated = bool(saved)  # 비어있지 않은 저장본 = 사용자가 직접 큐레이션함
     visible_set = set(saved) if saved is not None else set(all_cols)
     for col in all_cols:
         key = f"col_check_{col}"
         if key not in st.session_state:
-            st.session_state[key] = col in visible_set
+            # 신규 컬럼(🚀 run)은 큐레이션된 저장본에 없어도 기본 표시.
+            # (저장본이 이 컬럼 생기기 전 것일 수 있음. 빈 저장본 [] 은 아래 fallback이
+            #  전체 표시로 처리하므로 여기서 건드리지 않는다 — 영구저장도 하지 않는다.)
+            if col == "🚀 run" and _saved_curated and col not in saved:
+                st.session_state[key] = True
+            else:
+                st.session_state[key] = col in visible_set
     st.session_state["col_prefs_loaded"] = True
 
 
@@ -313,10 +333,17 @@ else:
 
 
 def _df_for_box(box_key: str) -> pd.DataFrame:
-    """박스 키로 필터한 DataFrame. 변경된 행 자동 상단 정렬."""
+    """박스 키로 필터한 DataFrame. 처리대기·변경된 행 자동 상단 정렬."""
     sub = df_all[~_is_test & (df_all[_STAGE_KEY] == box_key)].copy()
+    # 🟠 기초자료 박스: 엠군완료 처리 대기(run 있음) → 변동 순으로 상단 정렬.
+    # 그 외 박스: 변동만 상단 정렬.
+    sort_cols: list[str] = []
+    if box_key == WORKFLOW_BOX_BASIC and "_run_pending" in sub.columns:
+        sort_cols.append("_run_pending")
     if "_변경_여부" in sub.columns:
-        sub = sub.sort_values(by="_변경_여부", ascending=False, kind="stable")
+        sort_cols.append("_변경_여부")
+    if sort_cols:
+        sub = sub.sort_values(by=sort_cols, ascending=False, kind="stable")
     return sub.reset_index(drop=True)
 
 
@@ -420,7 +447,15 @@ def _render_table(df_sub: pd.DataFrame, key: str, title: str):
         if "_변경_여부" in df_sub.columns and not df_sub.empty
         else 0
     )
+    # 🚀 처리 대기(run 있는데 엠군완료 OFF) — 🟠 기초자료 박스에서만 1 이상.
+    n_pending = (
+        int(df_sub["_run_pending"].sum())
+        if "_run_pending" in df_sub.columns and not df_sub.empty
+        else 0
+    )
     header = f"### {title}  ·  {len(df_sub)}건"
+    if n_pending > 0:
+        header += f"  🚀 **{n_pending}건 엠군완료 처리 대기**"
     if n_changed > 0:
         header += f"  ⚠️ **{n_changed}건 변동 있음**"
     with st.container(border=True):
