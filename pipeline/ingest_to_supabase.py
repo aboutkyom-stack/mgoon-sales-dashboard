@@ -58,6 +58,23 @@ def _load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _read_raw(v, run: Path) -> str:
+    """payload raw 필드 해석: 파일 경로이면 읽고, 아니면 텍스트 그대로 반환.
+    v가 dict이면 'raw_file' 우선, 없으면 'raw'. str이면 경로 또는 텍스트로 판단."""
+    if v is None:
+        return ""
+    if isinstance(v, dict):
+        text = v.get("raw_file") or v.get("raw") or ""
+    else:
+        text = str(v)
+    if not text:
+        return ""
+    p = Path(text) if Path(text).is_absolute() else run / text
+    if p.exists():
+        return p.read_text(encoding="utf-8")
+    return text
+
+
 def main(run_dir: str) -> int:
     run = Path(run_dir)
     if not run.is_dir():
@@ -93,7 +110,7 @@ def main(run_dir: str) -> int:
     제품명_db = res.data[0].get("제품명")
 
     # PATCH 시맨틱: payload.product에 들어온 값만 덮어쓰기 (미언급 필드는 DB값 유지)
-    product_patch = {k: v for k, v in (payload.get("product") or {}).items() if v is not None}
+    product_patch = {k.lower(): v for k, v in (payload.get("product") or {}).items() if v is not None}
     if product_patch:
         db.table("상품").update(product_patch).eq("id", 상품_id).execute()
         print(f"[상품] 권위필드 PATCH: {list(product_patch.keys())}")
@@ -103,7 +120,7 @@ def main(run_dir: str) -> int:
     제품명 = product_patch.get("제품명") or product_meta.get("제품명") or 제품명_db or "(이름 없음)"
 
     # ── 2) 00 비전패스 → 상품.시각설명 + 비전패스_이력 ─────────
-    vision = payload.get("vision")
+    vision = _read_raw(payload.get("vision"), run)
     if vision:
         db.table("상품").update({"시각설명": vision}).eq("id", 상품_id).execute()
         db.table("비전패스_이력").insert({
@@ -148,7 +165,7 @@ def main(run_dir: str) -> int:
 
     selected_rank = payload.get("selected_rank")
     store.save_targets(run_id=run_id, targets=targets, model=MODEL,
-                       raw_output=(payload.get("targets_raw") or ""),
+                       raw_output=_read_raw(payload.get("targets_raw"), run),
                        recommended_rank=selected_rank)
     print(f"[01] 타겟 {len(targets)}개 적재")
 
@@ -171,7 +188,7 @@ def main(run_dir: str) -> int:
     # ── 5) 02~05 (선택 타겟에 매달아 적재) ─────────────────────
     p = payload.get("positioning")
     if p:
-        store.save_positioning(target_id, MODEL, p.get("raw", ""),
+        store.save_positioning(target_id, MODEL, _read_raw(p, run),
                                category_objections=p.get("category_objections"),
                                rule_engine_inputs=p.get("rule_engine_inputs"),
                                rule_engine_flags=p.get("rule_engine_flags"),
@@ -180,13 +197,13 @@ def main(run_dir: str) -> int:
 
     n = payload.get("naming")
     if n:
-        store.save_네이밍(target_id, MODEL, n.get("raw", ""), 분류=n.get("분류", ""))
+        store.save_네이밍(target_id, MODEL, _read_raw(n, run), 분류=n.get("분류", ""))
         print("[03] 네이밍 적재")
 
     detail_id = None
     d = payload.get("detail")
     if d:
-        detail_id = store.save_상세페이지(target_id, MODEL, d.get("raw", ""),
+        detail_id = store.save_상세페이지(target_id, MODEL, _read_raw(d, run),
                                        engine_plan=d.get("engine_plan"),
                                        한_축_사슬=d.get("한_축_사슬"),
                                        설득_방식_주=d.get("설득_방식_주"),
@@ -195,7 +212,7 @@ def main(run_dir: str) -> int:
 
     r = payload.get("review")
     if r and detail_id:
-        store.save_상세페이지_검수(detail_id, MODEL, r.get("raw", ""),
+        store.save_상세페이지_검수(detail_id, MODEL, _read_raw(r, run),
                                 검수_보고서=r.get("검수_보고서"), 다듬은_콘티=r.get("다듬은_콘티"))
         print("[04_b] 검수 적재")
     elif r and not detail_id:
@@ -203,7 +220,7 @@ def main(run_dir: str) -> int:
 
     img = payload.get("image_direction")
     if img:
-        store.save_이미지디렉션(target_id, MODEL, img.get("raw", ""),
+        store.save_이미지디렉션(target_id, MODEL, _read_raw(img, run),
                             sections=img.get("sections"),
                             design_system=img.get("design_system"),
                             selection_method=img.get("selection_method"))
@@ -211,11 +228,11 @@ def main(run_dir: str) -> int:
 
     c = payload.get("channel")
     if c:
-        store.save_채널(target_id, MODEL, c.get("raw", ""))
+        store.save_채널(target_id, MODEL, _read_raw(c, run))
         print("[05] 채널 적재")
 
     print("=" * 60)
-    print(f"[완료] run_id={run_id}, target_id={target_id} — 적재 성공")
+    print(f"[완료] run_id={run_id}, target_id={target_id} -- 적재 성공")
     print("=" * 60)
     return 0
 

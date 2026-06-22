@@ -676,6 +676,26 @@ def _strip_json_fences(text: str) -> str:
     return out.strip()
 
 
+def _parse_img_direction_from_raw(raw: str) -> dict | None:
+    """raw md의 ```json 블록에서 image_directions 배열과 디자인시스템 파싱."""
+    m = re.search(r"```json\s*(\{.*?\})\s*```", raw, re.DOTALL)
+    if not m:
+        return None
+    try:
+        data = json.loads(m.group(1))
+    except Exception:
+        return None
+    sections = data.get("image_directions") or []
+    if not sections:
+        return None
+    ds: dict = {}
+    if data.get("강조색_통일"):
+        ds["color_palette"] = [data["강조색_통일"]]
+    if data.get("canvas_default"):
+        ds["canvas_default"] = data["canvas_default"]
+    return {"sections": sections, "design_system": ds}
+
+
 def _extract_img_direction(dir_rows: list[dict]) -> dict | None:
     """엠군_이미지디렉션 행 목록 → {sections, design_system, raw}. 구조화 우선."""
     for d in (dir_rows or []):
@@ -691,12 +711,21 @@ def _extract_img_direction(dir_rows: list[dict]) -> dict | None:
                 ds = json.loads(ds)
             except Exception:
                 ds = None
+        raw = d.get("원본_출력") or ""
         if sec or ds:
-            return {"sections": sec or [], "design_system": ds or {},
-                    "raw": d.get("원본_출력") or ""}
+            # 요약 형식 감지(section_no 없음) → raw JSON 블록에서 full 데이터 파싱
+            if isinstance(sec, list) and sec and "section_no" not in sec[0]:
+                parsed = _parse_img_direction_from_raw(raw)
+                if parsed:
+                    return {**parsed, "raw": raw}
+            return {"sections": sec or [], "design_system": ds or {}, "raw": raw}
     for d in (dir_rows or []):
-        if d.get("원본_출력"):
-            return {"sections": [], "design_system": {}, "raw": d["원본_출력"]}
+        raw = d.get("원본_출력") or ""
+        if raw:
+            parsed = _parse_img_direction_from_raw(raw)
+            if parsed:
+                return {**parsed, "raw": raw}
+            return {"sections": [], "design_system": {}, "raw": raw}
     return None
 
 
@@ -814,19 +843,18 @@ def _render_interactive_run(data: dict) -> None:
         "복사 아이콘으로 그대로 복사해 ChatGPT에 붙여넣으세요."
     )
 
-    # run 메타 (시도 / 선택 타겟 / 가설)
-    with st.container(border=True):
-        if run.get("시도_라벨"):
-            st.markdown(f"**시도**: {run['시도_라벨']}")
-        if selected:
-            _sel = _db_row_to_target_dict(selected)
-            st.caption(f"🎯 선택 타겟 #{_sel.get('rank')} · {_sel.get('label') or ''}")
-        if run.get("타겟_가설"):
-            st.caption(f"🎯 타겟 가설: {run['타겟_가설']}")
-        if run.get("결핍_가설"):
-            st.caption(f"💢 결핍 가설: {run['결핍_가설']}")
-        if run.get("대화형_폴더명"):
-            st.caption(f"📁 원본 폴더: `{run['대화형_폴더명']}`")
+    # run 메타 (실행 이름 / 선택 타겟 / 가설) — 납작하게
+    if run.get("시도_라벨"):
+        st.caption(f"📌 실행: {run['시도_라벨']}")
+    if selected:
+        _sel = _db_row_to_target_dict(selected)
+        st.caption(f"🎯 타겟 #{_sel.get('rank')} · {_sel.get('label') or ''}")
+    if run.get("타겟_가설"):
+        st.caption(f"· 타겟 가설: {run['타겟_가설']}")
+    if run.get("결핍_가설"):
+        st.caption(f"· 결핍 가설: {run['결핍_가설']}")
+    if run.get("대화형_폴더명"):
+        st.caption(f"📁 원본 폴더: `{run['대화형_폴더명']}`")
 
     # ── 04-1 이미지 디렉션 — 최상단 (동료 메인 작업물) ──
     st.subheader("🎨 04-1 이미지 디렉션 — GPT 복붙용")
@@ -885,20 +913,12 @@ if not spec:
     st.stop()
 
 # ── Step A: 제품 요약 ───────────────────────────────────
-with st.container(border=True):
-    st.subheader(f"제품: #{spec.get('id')} · {spec.get('제품명')}")
-    _재고 = (spec.get("재고") or {}).get("실시간재고", "-")
-    _채널 = (spec.get("판매조건") or {}).get("판매채널", "-")
-    _가격 = (spec.get("가격") or {})
-    st.caption(
-        f"채널: {_채널}  ·  재고: {_재고}  ·  "
-        f"💸 온라인 판매 가격: **{_가격.get('온라인판매가격')}**  ·  "
-        f"소매가: {_가격.get('소매가')}  ·  도매가: {_가격.get('도매가')}"
-    )
-    if ss.get("current_run_id"):
-        st.caption(f"💾 저장된 실행: **#{ss['current_run_id']}**")
-    with st.expander("스펙 원본 보기", expanded=False):
-        st.json(spec)
+_prod_id = spec.get("id")
+_prod_id_str = f"#{_prod_id} · " if _prod_id else ""
+_run_str = f"  ·  💾 실행 #{ss['current_run_id']}" if ss.get("current_run_id") else ""
+st.caption(f"📦 {_prod_id_str}{spec.get('제품명') or '(제품명 없음)'}{_run_str}")
+with st.expander("스펙 원본 보기", expanded=False):
+    st.json(spec)
 
 st.divider()
 
