@@ -18,9 +18,9 @@ CHUNK = 1000
 @lru_cache(maxsize=1)
 def _client() -> Client:
     url = os.getenv("MY_SUPABASE_URL", "").strip()
-    key = os.getenv("MY_SUPABASE_ANON_KEY", "").strip()
+    key = (os.getenv("MY_SUPABASE_SERVICE_KEY") or os.getenv("MY_SUPABASE_ANON_KEY", "")).strip()
     if not url or not key:
-        raise RuntimeError(".env에 MY_SUPABASE_URL과 MY_SUPABASE_ANON_KEY를 설정하세요.")
+        raise RuntimeError(".env에 MY_SUPABASE_URL과 MY_SUPABASE_SERVICE_KEY를 설정하세요.")
     return create_client(url, key)
 
 
