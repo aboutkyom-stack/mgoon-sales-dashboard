@@ -72,6 +72,10 @@ def _read_raw(v, run: Path) -> str:
     p = Path(text) if Path(text).is_absolute() else run / text
     if p.exists():
         return p.read_text(encoding="utf-8")
+    if not Path(text).is_absolute():
+        p_item = run.parent / text
+        if p_item.exists():
+            return p_item.read_text(encoding="utf-8")
     return text
 
 

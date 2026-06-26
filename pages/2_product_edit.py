@@ -2390,19 +2390,19 @@ with tab_스펙:
     세로 = d2.number_input("세로 (cm)", min_value=0.0, value=float(row.get("세로_cm") or 0), format="%.1f")
     높이 = d3.number_input("높이 (cm)", min_value=0.0, value=float(row.get("높이_cm") or 0), format="%.1f")
     무게 = d4.number_input("무게 (g)",  min_value=0.0, value=float(row.get("무게_g")  or 0), format="%.0f")
-    st.markdown("**패키지(박스)**")
+    st.markdown("**패키지(포장)**")
     b1, b2, b3, b4 = st.columns(4)
-    박스_가로 = b1.number_input("박스 가로 (cm)", min_value=0.0,
-                                value=float(row.get("박스_가로_cm") or 0), format="%.1f",
+    포장_가로 = b1.number_input("포장 가로 (cm)", min_value=0.0,
+                                value=float(row.get("포장_가로_cm") or 0), format="%.1f",
                                 key="num_box_w")
-    박스_세로 = b2.number_input("박스 세로 (cm)", min_value=0.0,
-                                value=float(row.get("박스_세로_cm") or 0), format="%.1f",
+    포장_세로 = b2.number_input("포장 세로 (cm)", min_value=0.0,
+                                value=float(row.get("포장_세로_cm") or 0), format="%.1f",
                                 key="num_box_d")
-    박스_높이 = b3.number_input("박스 높이 (cm)", min_value=0.0,
-                                value=float(row.get("박스_높이_cm") or 0), format="%.1f",
+    포장_높이 = b3.number_input("포장 높이 (cm)", min_value=0.0,
+                                value=float(row.get("포장_높이_cm") or 0), format="%.1f",
                                 key="num_box_h")
-    박스_무게 = b4.number_input("박스 무게 (g)",  min_value=0.0,
-                                value=float(row.get("박스_무게_g")  or 0), format="%.0f",
+    포장_무게 = b4.number_input("포장 무게 (g)",  min_value=0.0,
+                                value=float(row.get("포장_무게_g")  or 0), format="%.0f",
                                 key="num_box_wt")
 
     st.divider()
@@ -2412,12 +2412,12 @@ with tab_스펙:
     재질   = m1.text_input("재질",   value=row.get("재질") or "")
     색상   = m2.text_input("색상",   value=row.get("색상") or "")
     구성품 = m3.text_input("구성품", value=row.get("구성품") or "")
-    st.markdown("**패키지(박스)**")
+    st.markdown("**패키지(포장)**")
     bm1, bm2 = st.columns(2)
-    박스_재질 = bm1.text_input("박스 재질", value=row.get("박스_재질") or "",
-                              placeholder="예: 종이박스, PE백, 블리스터팩",
+    포장_재질 = bm1.text_input("포장 재질", value=row.get("포장_재질") or "",
+                              placeholder="예: OPP봉투, 종이박스, PE백, 블리스터팩",
                               key="txt_box_material")
-    박스_색상 = bm2.text_input("박스 색상", value=row.get("박스_색상") or "",
+    포장_색상 = bm2.text_input("포장 색상", value=row.get("포장_색상") or "",
                               key="txt_box_color")
 
     st.divider()
@@ -2536,15 +2536,15 @@ with tab_스펙:
             "세로_cm":        세로          or None,
             "높이_cm":        높이          or None,
             "무게_g":         무게          or None,
-            "박스_가로_cm":   박스_가로     or None,
-            "박스_세로_cm":   박스_세로     or None,
-            "박스_높이_cm":   박스_높이     or None,
-            "박스_무게_g":    박스_무게     or None,
+            "포장_가로_cm":   포장_가로     or None,
+            "포장_세로_cm":   포장_세로     or None,
+            "포장_높이_cm":   포장_높이     or None,
+            "포장_무게_g":    포장_무게     or None,
             "재질":           재질          or None,
             "색상":           색상          or None,
             "구성품":         구성품        or None,
-            "박스_재질":      박스_재질     or None,
-            "박스_색상":      박스_색상     or None,
+            "포장_재질":      포장_재질     or None,
+            "포장_색상":      포장_색상     or None,
             "kc인증":         kc인증,
             "kc인증번호":     kc인증번호    or None,
             "전파인증":       전파인증,
